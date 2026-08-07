@@ -37,16 +37,18 @@ if uploaded_file is not None:
         if text:
             full_text += text + "\n"
 
-    # 1. Identificar Fecha de Corte
-    corte_match = re.search(r'Fecha de corte:\s*\|\s*\d{1,2}\s+([A-Z]{3})\s+(\d{4})', full_text)
+    # 1. Identificar Fecha de Corte (Búsqueda más flexible con o sin caracteres especiales)
+    corte_match = re.search(r'Fecha de corte:?\s*\|?\s*(\d{1,2})\s+([A-Z]{3})\s+(\d{4})', full_text, re.IGNORECASE)
     
     if corte_match:
-        mes_corte_str = corte_match.group(1)
-        anio_corte = corte_match.group(2)
+        dia_corte = corte_match.group(1)
+        mes_corte_str = corte_match.group(2).upper()
+        anio_corte = corte_match.group(3)
+        
         mes_num = MONTHS_MAP.get(mes_corte_str, '01')
         nombre_mes = MONTHS_NAME.get(mes_num, mes_corte_str)
         
-        st.success(f"📅 **Fecha de corte:** {mes_corte_str} {anio_corte} | Filtrando gastos de **{nombre_mes}**")
+        st.success(f"📅 **Fecha de corte:** {dia_corte} {mes_corte_str} {anio_corte} | Filtrando gastos de **{nombre_mes}**")
 
         # 2. Extraer transacciones
         pattern = re.compile(r'(\d{2}\s+[A-Z]{3}\s+\d{4})\s+(\d{2}\s+[A-Z]{3}\s+\d{4})\s+(.*?)\s+([\+\-]\$[\d,]+\.\d{2})')
@@ -62,8 +64,8 @@ if uploaded_file is not None:
             if monto.startswith('+$'):
                 d, mon, y = fecha_op.split()
                 # Filtrar solo las transacciones del mes de corte
-                if mon == mes_corte_str:
-                    formatted_date = f"{y}-{MONTHS_MAP[mon]}-{d}"
+                if mon.upper() == mes_corte_str:
+                    formatted_date = f"{y}-{MONTHS_MAP.get(mon.upper(), '01')}-{d}"
                     
                     # Limpiar prefijos de extracción si existen
                     d_clean = re.sub(r'^(88\s*|Ztl\*|Sgt\*)', '', desc_clean).strip()
@@ -86,6 +88,6 @@ if uploaded_file is not None:
             st.text_area("Copia el texto de abajo:", mensaje_final, height=400)
             st.info(f"💡 Total de egresos procesados: **{len(gastos_lineas)}**")
         else:
-            st.warning("No se encontraron gastos pertenecientes al mes de corte especificado.")
+            st.warning(f"No se encontraron gastos pertenecientes al mes de {nombre_mes}.")
     else:
         st.error("No se pudo detectar la Fecha de Corte en el PDF subido.")
