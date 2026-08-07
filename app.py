@@ -156,7 +156,7 @@ if uploaded_file is not None:
             st.error(f"Error leyendo el archivo CSV: {e}")
 
     # ------------------------------------------
-    # 3. TABLA EDITABLE Y RESULTADOS CON BOTÓN DE COPIAR
+    # 3. TABLA EDITABLE Y RESULTADOS SIN ENCABEZADOS EN SHEETS
     # ------------------------------------------
     if data_rows:
         df_editor = pd.DataFrame(data_rows)
@@ -197,7 +197,7 @@ if uploaded_file is not None:
             line_mon = f"{row['Tipo']}, ${m_val}, {row['Categoría']}, {row['Método de Pago']}, {row['Fecha']}, {row['Descripción']}"
             gastos_moneda.append(line_mon)
 
-            # Sheets (tabulaciones)
+            # Sheets (tabulaciones sin encabezados)
             line_sh = f"{row['Tipo']}\t{m_val}\t{row['Categoría']}\t{row['Método de Pago']}\t{row['Fecha']}\t{row['Descripción']}"
             gastos_sheets.append(line_sh)
 
@@ -212,7 +212,6 @@ if uploaded_file is not None:
             st.code(mensaje_moneda, language="text")
 
         with tab2:
-            st.caption("📋 Haz clic en el **ícono de copiar** en la esquina superior derecha del recuadro:")
-            header_sheets = "Tipo\tMonto\tCategoría\tMétodo de Pago\tFecha\tDescripción\n"
-            mensaje_sheets = header_sheets + "\n".join(gastos_sheets)
+            st.caption("📋 Haz clic en el **ícono de copiar** en la esquina superior derecha del recuadro (solo datos sin encabezados):")
+            mensaje_sheets = "\n".join(gastos_sheets)
             st.code(mensaje_sheets, language="text")
