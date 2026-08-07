@@ -14,20 +14,26 @@ st.write("Sube tu **PDF de Estado de Cuenta NU** o **CSV de Ventas Odoo**, revis
 LISTA_CATEGORIAS = [
     "Produccion Dayana",
     "Ventas",
-    "Varios",
-    "Alimentos y Bebidas",
-    "Servicios / Publicidad",
-    "Transporte / Gasolina",
-    "Insumos / Materiales",
-    "Nómina / Honorarios"
+    "Cuentas por cobrar",
+    "Otros ingresos",
+    "Carro/Transporte",
+    "Casa y Despensa",
+    "Gasolina",
+    "Cafe",
+    "Pago de Tarjetas",
+    "Inversion Dayana",
+    "Restaurantes y Comida",
+    "Ropa",
+    "No informado"
 ]
 
 LISTA_METODOS_PAGO = [
-    "NU (CREDITO)",
+    "Nu Credito",
     "Efectivo",
-    "Transferencia",
-    "Tarjeta de Débito",
-    "Tarjeta de Crédito"
+    "Nu Transferencia",
+    "Nu Debito",
+    "No informado",
+    "TDC Oro Credito"
 ]
 
 PROD_DAYANA_KEYWORDS = [
