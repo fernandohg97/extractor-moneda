@@ -156,7 +156,7 @@ if uploaded_file is not None:
             st.error(f"Error leyendo el archivo CSV: {e}")
 
     # ------------------------------------------
-    # 3. TABLA EDITABLE Y RESULTADOS GENERADOS
+    # 3. TABLA EDITABLE Y RESULTADOS DINÁMICOS
     # ------------------------------------------
     if data_rows:
         df_editor = pd.DataFrame(data_rows)
@@ -164,7 +164,7 @@ if uploaded_file is not None:
         st.subheader("✏️ Revisa y Modifica los Registros")
         st.caption("Puedes cambiar la Categoría o el Método de Pago seleccionando de la lista desplegable:")
 
-        # Configuración de menú desplegable en las columnas
+        # Editor interactivo
         edited_df = st.data_editor(
             df_editor,
             column_config={
@@ -188,7 +188,7 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        # Generación dinámica de mensajes a partir de los datos editados
+        # Reconstrucción sincrónica en tiempo real
         gastos_moneda = []
         gastos_sheets = []
 
@@ -205,14 +205,14 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # Pestañas de salida
+        # Pestañas de salida sin parámetros 'key' para garantizar sincronización en tiempo real
         tab1, tab2 = st.tabs(["📲 Para Moneda.pro (WhatsApp)", "📊 Para Google Sheets"])
 
         with tab1:
             mensaje_moneda = encabezado_contexto + "\n".join(gastos_moneda)
-            st.text_area("Copia y pega en WhatsApp:", mensaje_moneda, height=350, key="txt_mon_out")
+            st.text_area("Copia y pega en WhatsApp:", value=mensaje_moneda, height=350)
 
         with tab2:
             header_sheets = "Tipo\tMonto\tCategoría\tMétodo de Pago\tFecha\tDescripción\n"
             mensaje_sheets = header_sheets + "\n".join(gastos_sheets)
-            st.text_area("Copia y pega en Google Sheets (Celda A1):", mensaje_sheets, height=350, key="txt_sh_out")
+            st.text_area("Copia y pega en Google Sheets (Celda A1):", value=mensaje_sheets, height=350)
