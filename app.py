@@ -11,17 +11,18 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def cargar_datos():
     try:
-        # Pasa worksheet="Movimientos" de forma explícita
         df = conn.read(worksheet="Movimientos", ttl=0)
         if df is None or df.empty:
             return pd.DataFrame(columns=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
         
-        # Limpieza básica de datos
-        df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+        # Corrección de conversión de formato de fecha (soporta DD/MM/YYYY y AAAA-MM-DD)
+        df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce').dt.date
         df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
+        
+        # Eliminar registros con fechas inválidas o vacías
+        df = df.dropna(subset=['Fecha'])
         return df
     except Exception as e:
-        # Si la hoja está vacía o recién creada, devuelve un DataFrame estructurado para evitar que colapse la app
         st.warning(f"Nota sobre la base de datos: {e}")
         return pd.DataFrame(columns=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
 
