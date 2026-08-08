@@ -1,223 +1,112 @@
 import streamlit as st
-import pypdf
 import pandas as pd
-import re
+from datetime import datetime, timedelta
+from streamlit_gsheets import GSheetsConnection
+from pdf_generator import generar_pdf_reporte
 
-st.set_page_config(page_title="Extractor Nu & Odoo -> Moneda.pro & Sheets", page_icon="💳", layout="centered")
+st.set_page_config(page_title="Dashboard Financiero Dayana", layout="wide")
 
-st.title("💳 Extractor Financiero (Nu / Odoo)")
-st.write("Sube tu **PDF de Estado de Cuenta NU** o **CSV de Ventas Odoo**, revisa/edita las categorías y métodos de pago, y copia los resultados.")
+# Conexión con Google Sheets (Base de Datos)
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# ==========================================
-# LISTAS PREDEFINIDAS
-# ==========================================
-LISTA_CATEGORIAS = [
-    "Produccion Dayana",
-    "Ventas",
-    "Cuentas por cobrar",
-    "Otros ingresos",
-    "Carro/Transporte",
-    "Casa y Despensa",
-    "Gasolina",
-    "Cafe",
-    "Pago de Tarjetas",
-    "Inversion Dayana",
-    "Restaurantes y Comida",
-    "Ropa",
-    "No informado"
-]
+def cargar_datos():
+    df = conn.read(worksheet="Movimientos", ttl=0)
+    if df.empty:
+        return pd.DataFrame(columns=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
+    df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+    df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
+    return df
 
-LISTA_METODOS_PAGO = [
-    "Nu Credito",
-    "Efectivo",
-    "Nu Transferencia",
-    "Nu Debito",
-    "No informado",
-    "TDC Oro Credito"
-]
+df_base = cargar_datos()
 
-PROD_DAYANA_KEYWORDS = [
-    "abts el mayorista", 
-    "teip impresiones", 
-    "abts ctrl mayorista pr", 
-    "envases y plasticos", 
-    "abts el mayorista mark", 
-    "abts guga ensenada", 
-    "ley ensenada"
-]
+# Sidebar: Cargar nuevos registros semanal/mensual
+st.sidebar.title("📥 Cargar Movimientos")
+opcion_carga = st.sidebar.radio("Fuente de datos:", ["Formato TSV / Pegado directo", "Extraer PDF Nu / CSV Odoo"])
 
-MONTHS_MAP = {
-    'ENE': '01', 'FEB': '02', 'MAR': '03', 'ABR': '04', 'MAY': '05', 'JUN': '06',
-    'JUL': '07', 'AGO': '08', 'SEP': '09', 'OCT': '10', 'NOV': '11', 'DIC': '12'
-}
+if opcion_carga == "Formato TSV / Pegado directo":
+    raw_tsv = st.sidebar.text_area("Pega aquí las filas en formato TSV (de tu app de extracción):")
+    if st.sidebar.button("Guardar en Base de Datos"):
+        if raw_tsv.strip():
+            # Procesar datos pegados
+            from io import StringIO
+            df_nuevos = pd.read_csv(StringIO(raw_tsv), sep='\t', names=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
+            df_total = pd.concat([df_base, df_nuevos], ignore_index=True)
+            conn.update(worksheet="Movimientos", data=df_total)
+            st.sidebar.success("¡Registros guardados en Google Sheets exitosamente!")
+            st.rerun()
 
-MONTHS_NAME = {
-    '01': 'ENERO', '02': 'FEBRERO', '03': 'MARZO', '04': 'ABRIL', '05': 'MAYO', '06': 'JUNIO',
-    '07': 'JULIO', '08': 'AGOSTO', '09': 'SEPTIEMBRE', '10': 'OCTUBRE', '11': 'NOVIEMBRE', '12': 'DICIEMBRE'
-}
+# --- HEADER DEL DASHBOARD ---
+st.title("Analiza tus finanzas con reportes detallados")
+st.caption("Visualiza todas tus transacciones organizadas por fecha, categoría y tipo")
 
-uploaded_file = st.file_uploader("Arrastra o selecciona aquí tu archivo (PDF o CSV)", type=["pdf", "csv"])
+# --- SECCIÓN DE FILTROS ---
+col_f1, col_f2, col_f3, col_f4 = st.columns(4)
 
-if uploaded_file is not None:
-    file_type = uploaded_file.name.split('.')[-1].lower()
-    data_rows = []
-    encabezado_contexto = ""
+with col_f1:
+    atajo = st.selectbox("Atajo de Período", ["Personalizado", "Hoy", "Esta semana", "Este mes", "Últimos 3 meses"])
+    hoy = datetime.now().date()
+    if atajo == "Hoy":
+        f_ini, f_fin = hoy, hoy
+    elif atajo == "Esta semana":
+        f_ini = hoy - timedelta(days=hoy.weekday())
+        f_fin = f_ini + timedelta(days=6)
+    elif atajo == "Este mes":
+        f_ini = hoy.replace(day=1)
+        f_fin = hoy
+    elif atajo == "Últimos 3 meses":
+        f_ini = hoy - timedelta(days=90)
+        f_fin = hoy
+    else:
+        f_ini = hoy.replace(day=1)
+        f_fin = hoy
 
-    # ------------------------------------------
-    # 1. PARSEAR PDF DE NU
-    # ------------------------------------------
-    if file_type == "pdf":
-        reader = pypdf.PdfReader(uploaded_file)
-        full_text = ""
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                full_text += text + "\n"
+with col_f2:
+    f_inicio = st.date_input("Fecha Inicio", value=f_ini)
+    f_final = st.date_input("Fecha Fin", value=f_fin)
 
-        corte_match = re.search(r'Fecha de corte:?\s*\|?\s*(\d{1,2})\s+([A-Z]{3})\s+(\d{4})', full_text, re.IGNORECASE)
-        
-        if corte_match:
-            dia_corte = corte_match.group(1)
-            mes_corte_str = corte_match.group(2).upper()
-            anio_corte = corte_match.group(3)
-            mes_num = MONTHS_MAP.get(mes_corte_str, '01')
-            nombre_mes = MONTHS_NAME.get(mes_num, mes_corte_str)
-            
-            st.success(f"📄 **PDF NU Detectado** | Fecha de corte: {dia_corte} {mes_corte_str} {anio_corte} | Gastos de **{nombre_mes}**")
-            encabezado_contexto = f"Hola Moneda, registra los siguientes gastos correspondientes a mi tarjeta NU de {nombre_mes} {anio_corte}:\n\n"
+with col_f3:
+    filtro_tipo = st.selectbox("Tipo de Registro", ["TODOS", "Ingreso", "Gasto"])
 
-            pattern = re.compile(r'(\d{2}\s+[A-Z]{3}\s+\d{4})\s+(\d{2}\s+[A-Z]{3}\s+\d{4})\s+(.*?)\s+([\+\-]\$[\d,]+\.\d{2})')
-            matches = pattern.findall(full_text)
+with col_f4:
+    categorias_opts = ["TODAS"] + list(df_base['Categoria'].dropna().unique()) if not df_base.empty else ["TODAS"]
+    filtro_cat = st.selectbox("Categoría", categorias_opts)
 
-            for m in matches:
-                fecha_op, fecha_cargo, desc, monto = m
-                desc_clean = desc.split('|')[0].strip()
-                
-                if monto.startswith('+$'):
-                    d, mon, y = fecha_op.split()
-                    if mon.upper() == mes_corte_str:
-                        formatted_date = f"{y}-{MONTHS_MAP.get(mon.upper(), '01')}-{d}"
-                        d_clean = re.sub(r'^(88\s*|Ztl\*|Sgt\*)', '', desc_clean).strip()
-                        d_lower = d_clean.lower()
-                        
-                        has_cat = any(kw in d_lower for kw in PROD_DAYANA_KEYWORDS)
-                        categoria = "Produccion Dayana" if has_cat else "Varios"
-                        monto_val = float(monto.replace('+$', '').replace(',', '').strip())
+# Aplicar Filtros
+df_filtrado = df_base.copy()
+if not df_filtrado.empty:
+    df_filtrado = df_filtrado[(df_filtrado['Fecha'] >= f_inicio) & (df_filtrado['Fecha'] <= f_final)]
+    if filtro_tipo != "TODOS":
+        df_filtrado = df_filtrado[df_filtrado['Tipo'] == filtro_tipo]
+    if filtro_cat != "TODAS":
+        df_filtrado = df_filtrado[df_filtrado['Categoria'] == filtro_cat]
 
-                        data_rows.append({
-                            "Tipo": "Gasto",
-                            "Monto": monto_val,
-                            "Categoría": categoria,
-                            "Método de Pago": "NU (CREDITO)",
-                            "Fecha": formatted_date,
-                            "Descripción": d_clean
-                        })
-        else:
-            st.error("No se pudo detectar la Fecha de Corte en el PDF subido.")
+# CÁLCULO DE INDICADORES
+ingresos = df_filtrado[df_filtrado['Tipo'] == 'Ingreso']['Monto'].sum() if not df_filtrado.empty else 0.0
+egresos = df_filtrado[df_filtrado['Tipo'] == 'Gasto']['Monto'].sum() if not df_filtrado.empty else 0.0
+balance = ingresos - egresos
 
-    # ------------------------------------------
-    # 2. PARSEAR CSV DE ODOO
-    # ------------------------------------------
-    elif file_type == "csv":
-        try:
-            df_in = pd.read_csv(uploaded_file)
-            required_cols = ["Referencia de la orden", "Fecha de entrega", "Cliente", "Total", "Referencia del cliente"]
-            missing_cols = [col for col in required_cols if col not in df_in.columns]
+# --- BOTONES DE EXPORTACIÓN Y INDICADORES ---
+col_exp1, col_exp2 = st.columns(2)
 
-            if not missing_cols:
-                st.success("📊 **CSV de Odoo Detectado Correctamente**")
-                encabezado_contexto = "Hola Moneda, registra los siguientes ingresos correspondientes a mis ventas de Odoo:\n\n"
+with col_exp1:
+    csv_data = df_filtrado.to_csv(index=False).encode('utf-8')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nombre_csv = f"reporte_{f_inicio}_a_{f_final}_{timestamp}.csv"
+    st.download_button("📥 Exportar CSV", data=csv_data, file_name=nombre_csv, mime="text/csv", use_container_width=True)
 
-                for index, row in df_in.iterrows():
-                    raw_date = str(row["Fecha de entrega"])
-                    try:
-                        formatted_date = pd.to_datetime(raw_date).strftime('%Y-%m-%d')
-                    except:
-                        formatted_date = raw_date
+with col_exp2:
+    if not df_filtrado.empty:
+        pdf_bytes = generar_pdf_reporte(df_filtrado, f_inicio, f_final, ingresos, egresos, balance)
+        nombre_pdf = f"reporte_{f_inicio}_a_{f_final}_{timestamp}.pdf"
+        st.download_button("📄 Exportar PDF", data=pdf_bytes, file_name=nombre_pdf, mime="application/pdf", use_container_width=True)
 
-                    monto_raw = str(row["Total"]).replace('$', '').replace(',', '').strip()
-                    try:
-                        monto_val = float(monto_raw)
-                    except:
-                        monto_val = 0.0
+st.markdown("---")
 
-                    cliente = str(row["Cliente"]).strip() if pd.notna(row["Cliente"]) else ""
-                    ref_orden = str(row["Referencia de la orden"]).strip() if pd.notna(row["Referencia de la orden"]) else ""
-                    ref_cliente = str(row["Referencia del cliente"]).strip() if pd.notna(row["Referencia del cliente"]) else ""
+# SCORECARDS PRINCIPALES
+c_ing, c_egr, c_bal = st.columns(3)
+c_ing.metric("TOTAL DE INGRESOS", f"${ingresos:,.2f}")
+c_egr.metric("TOTAL DE EGRESOS", f"-${egresos:,.2f}")
+c_bal.metric("BALANCE DEL PERÍODO", f"${balance:,.2f}")
 
-                    partes_desc = [p for p in [cliente, ref_orden, ref_cliente] if p]
-                    desc_completa = " - ".join(partes_desc)
-
-                    data_rows.append({
-                        "Tipo": "Ingreso",
-                        "Monto": monto_val,
-                        "Categoría": "Ventas",
-                        "Método de Pago": "Efectivo",
-                        "Fecha": formatted_date,
-                        "Descripción": desc_completa
-                    })
-            else:
-                st.error(f"Faltan columnas requeridas en el CSV: {', '.join(missing_cols)}")
-        except Exception as e:
-            st.error(f"Error leyendo el archivo CSV: {e}")
-
-    # ------------------------------------------
-    # 3. TABLA EDITABLE Y RESULTADOS SIN ENCABEZADOS EN SHEETS
-    # ------------------------------------------
-    if data_rows:
-        df_editor = pd.DataFrame(data_rows)
-
-        st.subheader("✏️ Revisa y Modifica los Registros")
-        st.caption("Puedes cambiar la Categoría o el Método de Pago seleccionando de la lista desplegable:")
-
-        edited_df = st.data_editor(
-            df_editor,
-            column_config={
-                "Categoría": st.column_config.SelectboxColumn(
-                    "Categoría",
-                    options=LISTA_CATEGORIAS,
-                    required=True,
-                ),
-                "Método de Pago": st.column_config.SelectboxColumn(
-                    "Método de Pago",
-                    options=LISTA_METODOS_PAGO,
-                    required=True,
-                ),
-                "Monto": st.column_config.NumberColumn(
-                    "Monto ($)",
-                    format="$%.2f"
-                )
-            },
-            hide_index=True,
-            num_rows="dynamic",
-            use_container_width=True
-        )
-
-        gastos_moneda = []
-        gastos_sheets = []
-
-        for _, row in edited_df.iterrows():
-            m_val = f"{row['Monto']:.2f}"
-            
-            # Moneda.pro (comas)
-            line_mon = f"{row['Tipo']}, ${m_val}, {row['Categoría']}, {row['Método de Pago']}, {row['Fecha']}, {row['Descripción']}"
-            gastos_moneda.append(line_mon)
-
-            # Sheets (tabulaciones sin encabezados)
-            line_sh = f"{row['Tipo']}\t{m_val}\t{row['Categoría']}\t{row['Método de Pago']}\t{row['Fecha']}\t{row['Descripción']}"
-            gastos_sheets.append(line_sh)
-
-        st.divider()
-
-        # Pestañas de salida con botón de copia integrado
-        tab1, tab2 = st.tabs(["📲 Para Moneda.pro (WhatsApp)", "📊 Para Google Sheets"])
-
-        with tab1:
-            st.caption("📋 Haz clic en el **ícono de copiar** en la esquina superior derecha del recuadro:")
-            mensaje_moneda = encabezado_contexto + "\n".join(gastos_moneda)
-            st.code(mensaje_moneda, language="text")
-
-        with tab2:
-            st.caption("📋 Haz clic en el **ícono de copiar** en la esquina superior derecha del recuadro (solo datos sin encabezados):")
-            mensaje_sheets = "\n".join(gastos_sheets)
-            st.code(mensaje_sheets, language="text")
+st.markdown("### Lista de Transacciones")
+st.dataframe(df_filtrado, use_container_width=True)
