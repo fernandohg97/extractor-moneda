@@ -5,3 +5,4 @@ google-auth>=2.20.0
 reportlab>=4.0.0
 plotly>=5.18.0
 st-gsheets-connection>=0.1.0
+pypdf>=3.17.0
