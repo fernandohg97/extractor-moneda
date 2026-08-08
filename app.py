@@ -46,7 +46,7 @@ if opcion_carga == "Formato TSV / Pegado directo":
 
 # --- HEADER DEL DASHBOARD ---
 st.title("Analiza tus finanzas con reportes detallados")
-st.caption("Visualiza todas tus transacciones organizadas por fecha, categoría y tipo")
+st.caption("Visualiza todas tus transacciones organizadas por fecha, categoria y tipo")
 
 # --- SECCIÓN DE FILTROS ---
 col_f1, col_f2, col_f3, col_f4 = st.columns(4)
@@ -78,7 +78,7 @@ with col_f3:
 
 with col_f4:
     categorias_opts = ["TODAS"] + list(df_base['Categoria'].dropna().unique()) if not df_base.empty else ["TODAS"]
-    filtro_cat = st.selectbox("Categoría", categorias_opts)
+    filtro_cat = st.selectbox("Categoria", categorias_opts)
 
 # Aplicar Filtros
 df_filtrado = df_base.copy()
