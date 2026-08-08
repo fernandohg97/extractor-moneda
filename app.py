@@ -76,12 +76,23 @@ def procesar_pdf_nu(file_stream, file_name=""):
             
     meses_dict = {
         "ene": "01", "feb": "02", "mar": "03", "abr": "04", "may": "05", "jun": "06",
-        "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12"
+        "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12",
+        "enero": "01", "febrero": "02", "marzo": "03", "abril": "04", "mayo": "05", "junio": "06",
+        "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
     }
+
+    # 1. Detectar año de corte (del texto o del nombre del archivo)
+    ano_corte = str(datetime.now().year)
+    match_ano = re.search(r"\b(20\d{2})\b", texto_completo)
+    if not match_ano and file_name:
+        match_ano = re.search(r"\b(20\d{2})\b", file_name)
+    if match_ano:
+        ano_corte = match_ano.group(1)
 
     registros = []
     lineas = texto_completo.split("\n")
     
+    # 2. Banderas flexibles para ubicar la tabla
     dentro_de_tabla = False
     
     for linea in lineas:
@@ -92,22 +103,21 @@ def procesar_pdf_nu(file_stream, file_name=""):
         l_upper = l.upper()
         l_lower = l.lower()
         
-        # Activar lectura al encontrar el encabezado de la tabla de compras regulares
-        if "CARGOS, ABONOS Y COMPRAS REGULARES" in l_upper or "COMPRAS REGULARES (NO A MESES)" in l_upper:
+        # Activar si encuentra cualquiera de los encabezados clave
+        if any(h in l_upper for h in ["CARGOS, ABONOS", "COMPRAS REGULARES", "FECHA DE LA OPERACIÓN", "DESCRIPCIÓN DEL MOVIMIENTO"]):
             dentro_de_tabla = True
             continue
             
-        # Desactivar si llega a otra sección del documento
+        # Desactivar si llega al pie de tabla o a secciones a meses
         if dentro_de_tabla and any(fin in l_upper for fin in ["COMPRAS A MESES", "PLAN DE PAGOS", "ACLARACIONES", "INFORMACIÓN DE INTERESES"]):
             dentro_de_tabla = False
             break
 
         if dentro_de_tabla:
-            # IGNORAR EXPLÍCITAMENTE TOTALES, RESÚMENES Y ABONOS
+            # IGNORAR TOTALES, ABONOS Y PAGOS RECIBIDOS
             if any(ignore in l_lower for ignore in [
                 "total de cargos", 
                 "total de abonos", 
-                "total de compras", 
                 "grácias por tu pago", 
                 "gracias por tu pago", 
                 "abono", 
@@ -115,30 +125,31 @@ def procesar_pdf_nu(file_stream, file_name=""):
             ]):
                 continue
 
+            # Buscar montos positivos +$...
             match_cargo = re.search(r"\+\$\s*([\d,]+\.\d{2})", l)
             if match_cargo:
                 try:
                     monto_val = float(match_cargo.group(1).replace(",", ""))
                     
-                    # PATRÓN DE FECHAS: Capturar (Fecha Operación) y (Fecha Cargo)
-                    # Ejemplo: "22 MAY 2026 23 MAY 2026 Serv Chapluk | RFC: S.I."
-                    match_fechas = re.search(r"(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})", l)
+                    # PATRÓN DE FECHAS: Capturar las dos fechas sin año (ej: "22 MAY 23 MAY") o con año
+                    match_fechas = re.search(r"(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\s+(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)", l)
                     
                     if match_fechas:
-                        fecha_cargo_raw = match_fechas.group(2) # Tomar exactamente FECHA DE CARGO (la 2da fecha)
+                        fecha_cargo_raw = match_fechas.group(2).strip() # Tomar FECHA DE CARGO (la 2da)
                         partes_fecha = fecha_cargo_raw.split()
                         
                         dia_cargo = partes_fecha[0].zfill(2)
                         mes_cargo_str = partes_fecha[1].lower()[:3]
-                        ano_cargo = partes_fecha[2]
-                        
                         mes_cargo = meses_dict.get(mes_cargo_str, "01")
-                        fecha_fmt = f"{ano_cargo}-{mes_cargo}-{dia_cargo}"
+                        
+                        # Si la fecha incluía año propio, usarlo; de lo contrario, usar ano_corte
+                        ano_mov = partes_fecha[2] if len(partes_fecha) > 2 else ano_corte
+                        fecha_fmt = f"{ano_mov}-{mes_cargo}-{dia_cargo}"
                     else:
-                        fecha_fmt = datetime.now().strftime("%Y-%m-%d")
+                        fecha_fmt = f"{ano_corte}-01-01"
 
                     # Extraer Descripción limpiando fechas, RFC y montos
-                    desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4}", "", l)
+                    desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?\s+\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?", "", l)
                     desc = re.sub(r"\+\$\s*[\d,]+\.\d{2}", "", desc)
                     desc = re.sub(r"\|\s*RFC:.*", "", desc, flags=re.IGNORECASE).strip()
                     
@@ -152,8 +163,8 @@ def procesar_pdf_nu(file_stream, file_name=""):
                         "Monto": monto_val,
                         "Categoria": cat,
                         "Metodo_Pago": "NU (CREDITO)",
-                        "Fecha": fecha_fmt, # Fecha de Cargo
-                        "Descripcion": desc # Descripción limpia
+                        "Fecha": fecha_fmt,
+                        "Descripcion": desc
                     })
                 except ValueError:
                     continue
@@ -164,6 +175,7 @@ def procesar_pdf_nu(file_stream, file_name=""):
         df_res = df_res.sort_values(by="Fecha").reset_index(drop=True)
         df_res = df_res[['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion']]
     return df_res
+
 def procesar_csv_odoo(file_stream):
     df_odoo = pd.read_csv(file_stream)
     registros = []
