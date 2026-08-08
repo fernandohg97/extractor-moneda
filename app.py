@@ -1,13 +1,20 @@
 import streamlit as st
 import pandas as pd
 import re
+import json
 from datetime import datetime, timedelta
 from pypdf import PdfReader
-from io import StringIO
+from io import BytesIO
+import requests
 from streamlit_gsheets import GSheetsConnection
+import streamlit.components.v1 as components
 from pdf_generator import generar_pdf_reporte
 
 st.set_page_config(page_title="Finanzas Dayana", layout="wide")
+
+# Lectura de credenciales para Google Drive Picker
+API_KEY = st.secrets["google_picker"].get("api_key", "")
+CLIENT_ID = st.secrets["google_picker"].get("client_id", "")
 
 # Conexión con Google Sheets (Base de Datos)
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -40,13 +47,12 @@ def categorizar_nu(descripcion):
             return "Produccion Dayana"
     return "Varios"
 
-def procesar_pdf_nu(file):
-    reader = PdfReader(file)
+def procesar_pdf_nu(file_stream):
+    reader = PdfReader(file_stream)
     texto_completo = ""
     for page in reader.pages:
         texto_completo += page.extract_text() + "\n"
     
-    # Extraer Fecha de Corte para definir Año-Mes
     corte_match = re.search(r"Fecha de corte:\s*(\d{2})\s+([A-Za-z]+)\s+(\d{4})", texto_completo, re.IGNORECASE)
     meses = {"ene": "01", "feb": "02", "mar": "03", "abr": "04", "may": "05", "jun": "06", 
              "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12"}
@@ -59,7 +65,6 @@ def procesar_pdf_nu(file):
         ano = str(datetime.now().year)
         mes = f"{datetime.now().month:02d}"
 
-    # Patrón de extracción de cargos
     patron_cargo = r"(\d{2}\s+[A-Za-z]{3})\s+(.*?)\s+\$\s*([\d,]+\.\d{2})"
     coincidencias = re.findall(patron_cargo, texto_completo)
     
@@ -80,8 +85,8 @@ def procesar_pdf_nu(file):
             })
     return pd.DataFrame(registros)
 
-def procesar_csv_odoo(file):
-    df_odoo = pd.read_csv(file)
+def procesar_csv_odoo(file_stream):
+    df_odoo = pd.read_csv(file_stream)
     registros = []
     for _, row in df_odoo.iterrows():
         cliente = str(row.get("Cliente", "")).strip()
@@ -103,6 +108,84 @@ def procesar_csv_odoo(file):
         })
     return pd.DataFrame(registros)
 
+# --- COMPONENTE VISUAL GOOGLE DRIVE PICKER ---
+def render_drive_picker(mime_type, key_id):
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <script src="https://apis.google.com/js/api.js"></script>
+      <script src="https://accounts.google.com/gsi/client"></script>
+    </head>
+    <body style="margin:0; padding:0; background:transparent;">
+      <button id="pickerBtn" style="
+        background-color: #2563eb; color: white; border: none; padding: 10px 18px; 
+        border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px;
+        width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;">
+        📁 Abrir Explorador de Google Drive
+      </button>
+
+      <script>
+        const developerKey = '{API_KEY}';
+        const clientId = '{CLIENT_ID}';
+        const mimeType = '{mime_type}';
+        let accessToken = null;
+
+        function tokenCallback(response) {{
+          if (response.error !== undefined) {{
+            throw (response);
+          }}
+          accessToken = response.access_token;
+          createPicker();
+        }}
+
+        const tokenClient = google.accounts.oauth2.initTokenClient({{
+          client_id: clientId,
+          scope: 'https://www.googleapis.com/auth/drive.readonly',
+          callback: tokenCallback,
+        }});
+
+        document.getElementById('pickerBtn').addEventListener('click', () => {{
+          if (accessToken === null) {{
+            tokenClient.requestAccessToken({{prompt: 'consent'}});
+          }} else {{
+            tokenClient.requestAccessToken({{prompt: ''}});
+          }}
+        }});
+
+        function createPicker() {{
+          gapi.load('picker', () => {{
+            const view = new google.picker.View(google.picker.ViewId.DOCS);
+            view.setMimeTypes(mimeType);
+            const picker = new google.picker.PickerBuilder()
+                .enableFeature(google.picker.Feature.NAV_HIDDEN)
+                .setAppId(clientId)
+                .setOAuthToken(accessToken)
+                .addView(view)
+                .setDeveloperKey(developerKey)
+                .setCallback(pickerCallback)
+                .build();
+            picker.setVisible(true);
+          }});
+        }}
+
+        function pickerCallback(data) {{
+          if (data.action === google.picker.Action.PICKED) {{
+            const doc = data.docs[0];
+            const fileId = doc.id;
+            const fileName = doc.name;
+            
+            // Enviar datos seleccionados a Streamlit mediante la URL query params
+            const targetUrl = window.parent.location.pathname + '?drive_file_id=' + fileId + '&auth_token=' + accessToken + '&file_name=' + encodeURIComponent(fileName);
+            window.parent.location.href = targetUrl;
+          }}
+        }}
+      </script>
+    </body>
+    </html>
+    """
+    components.html(html_code, height=55)
+
 # --- NAVEGACIÓN EN SIDEBAR ---
 st.sidebar.title("📌 Navegación")
 pagina = st.sidebar.radio("Ir a:", ["📊 Dashboard Financiero", "📄 Extractor Nu / Odoo"])
@@ -114,7 +197,6 @@ if pagina == "📊 Dashboard Financiero":
     st.title("Analiza tus finanzas con reportes detallados")
     st.caption("Visualiza todas tus transacciones organizadas por fecha, categoría y tipo")
 
-    # FILTROS
     col_f1, col_f2, col_f3, col_f4 = st.columns(4)
 
     with col_f1:
@@ -146,7 +228,6 @@ if pagina == "📊 Dashboard Financiero":
     with col_f4:
         filtro_cat = st.selectbox("Categoría", categorias_opts)
 
-    # APLICAR FILTROS
     df_filtrado = df_base.copy()
     if not df_filtrado.empty:
         df_filtrado = df_filtrado[(df_filtrado['Fecha'] >= f_inicio) & (df_filtrado['Fecha'] <= f_final)]
@@ -155,12 +236,10 @@ if pagina == "📊 Dashboard Financiero":
         if filtro_cat != "TODAS":
             df_filtrado = df_filtrado[df_filtrado['Categoria'] == filtro_cat]
 
-    # CÁLCULOS
     ingresos = df_filtrado[df_filtrado['Tipo'] == 'Ingreso']['Monto'].sum() if not df_filtrado.empty else 0.0
     egresos = df_filtrado[df_filtrado['Tipo'] == 'Gasto']['Monto'].sum() if not df_filtrado.empty else 0.0
     balance = ingresos - egresos
 
-    # EXPORTACIÓN
     col_exp1, col_exp2 = st.columns(2)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -175,7 +254,6 @@ if pagina == "📊 Dashboard Financiero":
 
     st.markdown("---")
 
-    # SCORECARDS
     c_ing, c_egr, c_bal = st.columns(3)
     c_ing.metric("TOTAL DE INGRESOS", f"${ingresos:,.2f}")
     c_egr.metric("TOTAL DE EGRESOS", f"-${egresos:,.2f}")
@@ -189,62 +267,101 @@ if pagina == "📊 Dashboard Financiero":
 # ==========================================
 else:
     st.title("Extracción y Registro de Gastos e Ingresos")
-    st.caption("Carga tus PDFs de Nu o CSVs de Odoo para transformarlos automáticamente al formato TSV de Google Sheets.")
+    st.caption("Importa archivos desde Google Drive o tu almacenamiento local para procesar movimientos.")
+
+    # PROCESAMIENTO DE ARCHIVOS PROVENIENTES DE GOOGLE DRIVE PICKER
+    query_params = st.query_params
+    if "drive_file_id" in query_params and "auth_token" in query_params:
+        file_id = query_params["drive_file_id"]
+        token = query_params["auth_token"]
+        file_name = query_params.get("file_name", "Archivo de Drive")
+        
+        st.info(f"📥 Cargando desde Google Drive: **{file_name}**")
+        
+        try:
+            # Descarga del archivo mediante la API REST de Google Drive con el Token de OAuth
+            headers = {"Authorization": f"Bearer {token}"}
+            response = requests.get(f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media", headers=headers)
+            
+            if response.status_code == 200:
+                file_bytes = BytesIO(response.content)
+                
+                if file_name.lower().endswith(".pdf"):
+                    df_extracted = procesar_pdf_nu(file_bytes)
+                    st.success(f"¡Se procesaron {len(df_extracted)} cargos del PDF Nu exitosamente!")
+                else:
+                    df_extracted = procesar_csv_odoo(file_bytes)
+                    st.success(f"¡Se procesaron {len(df_extracted)} ventas de Odoo exitosamente!")
+
+                if not df_extracted.empty:
+                    df_edited = st.data_editor(df_extracted, num_rows="dynamic", use_container_width=True)
+                    tsv_data = df_edited.to_csv(index=False, sep='\t', header=False)
+                    
+                    st.markdown("#### Formato TSV para Google Sheets:")
+                    st.code(tsv_data, language="text")
+                    
+                    if st.button("🚀 Guardar estos registros en Google Sheets"):
+                        df_total = pd.concat([df_base, df_edited], ignore_index=True)
+                        conn.update(worksheet="Movimientos", data=df_total)
+                        st.success("¡Base de datos actualizada correctamente!")
+                        st.query_params.clear()
+                        st.rerun()
+            else:
+                st.error("No se pudo descargar el archivo de Google Drive. Inténtalo de nuevo.")
+        except Exception as ex:
+            st.error(f"Error procesando el archivo de Drive: {ex}")
+            
+        if st.button("Limpiar selección de Drive"):
+            st.query_params.clear()
+            st.rerun()
+        st.markdown("---")
 
     tab1, tab2 = st.tabs(["💳 Estado de Cuenta Nu (PDF)", "🛍️ Ventas Odoo (CSV)"])
     
-    # PESTAÑA NU
     with tab1:
-        st.subheader("Extraer Egresos desde PDF Nu")
-        pdf_file = st.file_uploader("Sube tu Estado de Cuenta Nu en PDF", type=["pdf"], key="pdf_nu")
-        if pdf_file:
-            try:
+        st.subheader("Importar Estado de Cuenta Nu")
+        col_drive, col_local = st.columns(2)
+        
+        with col_drive:
+            st.markdown("**Opción A: Desde Google Drive**")
+            render_drive_picker("application/pdf", "nu_picker")
+            
+        with col_local:
+            st.markdown("**Opción B: Desde dispositivo Local / Móvil**")
+            pdf_file = st.file_uploader("Subir PDF local", type=["pdf"], key="pdf_nu_local")
+            if pdf_file:
                 df_extracted_nu = procesar_pdf_nu(pdf_file)
                 if not df_extracted_nu.empty:
                     st.success(f"Se extrajeron {len(df_extracted_nu)} cargos correctamente.")
-                    
-                    # Salida interactiva editable
                     df_edited = st.data_editor(df_extracted_nu, num_rows="dynamic", use_container_width=True)
-                    
-                    # Generar TSV
                     tsv_data = df_edited.to_csv(index=False, sep='\t', header=False)
-                    st.markdown("#### Formato TSV para copiar y pegar en Sheets:")
                     st.code(tsv_data, language="text")
-                    
-                    # Botón de guardado directo a Sheets
-                    if st.button("🚀 Guardar estos registros directamente en Google Sheets", key="btn_nu"):
+                    if st.button("🚀 Guardar directamente en Google Sheets", key="btn_nu_local"):
                         df_total = pd.concat([df_base, df_edited], ignore_index=True)
                         conn.update(worksheet="Movimientos", data=df_total)
-                        st.success("¡Egresos añadidos con éxito a la base de datos de Google Sheets!")
+                        st.success("¡Egresos guardados!")
                         st.rerun()
-                else:
-                    st.warning("No se encontraron cargos positivos en el archivo subido.")
-            except Exception as e:
-                st.error(f"Error al procesar el PDF: {e}")
 
-    # PESTAÑA ODOO
     with tab2:
-        st.subheader("Extraer Ingresos desde CSV Odoo")
-        csv_file = st.file_uploader("Sube tu archivo de ventas Odoo en CSV", type=["csv"], key="csv_odoo")
-        if csv_file:
-            try:
+        st.subheader("Importar Ventas Odoo")
+        col_drive_csv, col_local_csv = st.columns(2)
+        
+        with col_drive_csv:
+            st.markdown("**Opción A: Desde Google Drive**")
+            render_drive_picker("text/csv", "odoo_picker")
+            
+        with col_local_csv:
+            st.markdown("**Opción B: Desde dispositivo Local / Móvil**")
+            csv_file = st.file_uploader("Subir CSV local", type=["csv"], key="csv_odoo_local")
+            if csv_file:
                 df_extracted_odoo = procesar_csv_odoo(csv_file)
                 if not df_extracted_odoo.empty:
                     st.success(f"Se extrajeron {len(df_extracted_odoo)} ventas correctamente.")
-                    
-                    # Salida interactiva editable
                     df_edited_odoo = st.data_editor(df_extracted_odoo, num_rows="dynamic", use_container_width=True)
-                    
-                    # Generar TSV
                     tsv_data_odoo = df_edited_odoo.to_csv(index=False, sep='\t', header=False)
-                    st.markdown("#### Formato TSV para copiar y pegar en Sheets:")
                     st.code(tsv_data_odoo, language="text")
-                    
-                    # Botón de guardado directo a Sheets
-                    if st.button("🚀 Guardar estas ventas directamente en Google Sheets", key="btn_odoo"):
+                    if st.button("🚀 Guardar directamente en Google Sheets", key="btn_odoo_local"):
                         df_total = pd.concat([df_base, df_edited_odoo], ignore_index=True)
                         conn.update(worksheet="Movimientos", data=df_total)
-                        st.success("¡Ventas añadidas con éxito a la base de datos de Google Sheets!")
+                        st.success("¡Ventas guardadas!")
                         st.rerun()
-            except Exception as e:
-                st.error(f"Error al procesar el CSV: {e}")
