@@ -51,9 +51,12 @@ def procesar_pdf_nu(file_stream):
     reader = PdfReader(file_stream)
     texto_completo = ""
     for page in reader.pages:
-        texto_completo += page.extract_text() + "\n"
+        txt = page.extract_text()
+        if txt:
+            texto_completo += txt + "\n"
     
-    corte_match = re.search(r"Fecha de corte:\s*(\d{2})\s+([A-Za-z]+)\s+(\d{4})", texto_completo, re.IGNORECASE)
+    # 1. Intentar detectar Fecha de Corte en el documento
+    corte_match = re.search(r"corte:\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", texto_completo, re.IGNORECASE)
     meses = {"ene": "01", "feb": "02", "mar": "03", "abr": "04", "may": "05", "jun": "06", 
              "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12"}
     
@@ -65,25 +68,60 @@ def procesar_pdf_nu(file_stream):
         ano = str(datetime.now().year)
         mes = f"{datetime.now().month:02d}"
 
-    patron_cargo = r"(\d{2}\s+[A-Za-z]{3})\s+(.*?)\s+\$\s*([\d,]+\.\d{2})"
-    coincidencias = re.findall(patron_cargo, texto_completo)
-    
     registros = []
-    for dia_mes, desc, monto_str in coincidencias:
-        monto = float(monto_str.replace(",", ""))
-        if monto > 0 and "pago recibido" not in desc.lower():
-            dia = dia_mes.split()[0].zfill(2)
-            fecha_fmt = f"{ano}-{mes}-{dia}"
-            cat = categorizar_nu(desc)
-            registros.append({
-                "Tipo": "Gasto",
-                "Monto": monto,
-                "Categoria": cat,
-                "Metodo_Pago": "NU (CREDITO)",
-                "Fecha": fecha_fmt,
-                "Descripcion": desc.strip()
-            })
-    return pd.DataFrame(registros)
+    
+    # 2. Expresiones regulares flexibles para encontrar cargos en los estados de cuenta de Nu
+    # Cubre lineas como: "23 JUN Mayorista $197.66" o "23 Jun $197.66"
+    patrones = [
+        r"(\d{1,2}\s+[A-Za-z]{3})\s+(.*?)\s+\$\s*([\d,]+\.\d{2})",
+        r"(\d{1,2}\s+[A-Za-z]{3})\s+\$\s*([\d,]+\.\d{2})\s+(.*)"
+    ]
+    
+    lineas = texto_completo.split("\n")
+    for linea in lineas:
+        linea_str = linea.strip()
+        # Omitir abonos o pagos a la tarjeta
+        if "pago recibido" in linea_str.lower() or "su pago" in linea_str.lower() or "bonificación" in linea_str.lower():
+            continue
+            
+        for pat in patrones:
+            match = re.search(pat, linea_str)
+            if match:
+                groups = match.groups()
+                dia_mes = groups[0]
+                
+                # Extraer monto y descripción según el patrón
+                if "$" in groups[1]:
+                    monto_str = groups[1]
+                    desc = groups[2] if len(groups) > 2 else "Gasto Nu"
+                else:
+                    desc = groups[1]
+                    monto_str = groups[2]
+                
+                try:
+                    monto = float(monto_str.replace(",", "").strip())
+                    if monto > 0:
+                        dia = dia_mes.split()[0].zfill(2)
+                        fecha_fmt = f"{ano}-{mes}-{dia}"
+                        cat = categorizar_nu(desc)
+                        
+                        registros.append({
+                            "Tipo": "Gasto",
+                            "Monto": monto,
+                            "Categoria": cat,
+                            "Metodo_Pago": "NU (CREDITO)",
+                            "Fecha": fecha_fmt,
+                            "Descripcion": desc.strip() if desc.strip() else "Gasto Nu"
+                        })
+                        break
+                except ValueError:
+                    continue
+
+    df_res = pd.DataFrame(registros)
+    if not df_res.empty:
+        # Asegurar el orden exacto de columnas para Google Sheets (Movimientos)
+        df_res = df_res[['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion']]
+    return df_res
 
 def procesar_csv_odoo(file_stream):
     df_odoo = pd.read_csv(file_stream)
@@ -329,28 +367,36 @@ else:
             st.markdown("**Opción B: Desde dispositivo Local / Móvil**")
             pdf_file = st.file_uploader("Subir PDF local", type=["pdf"], key="pdf_nu_local")
 
-        # El procesamiento se hace fuera de las columnas a todo el ancho de la pantalla
+        st.markdown("---")
+
+        # RENDERIZADO COMPLETO FUERA DE LAS COLUMNAS
         if pdf_file is not None:
             try:
                 df_extracted_nu = procesar_pdf_nu(pdf_file)
                 if not df_extracted_nu.empty:
-                    st.success(f"¡Se extrajeron {len(df_extracted_nu)} cargos correctamente!")
+                    st.success(f"¡Se extrajeron {len(df_extracted_nu)} cargos de este estado de cuenta!")
                     
-                    # Tabla Interactiva
-                    df_edited_nu = st.data_editor(df_extracted_nu, num_rows="dynamic", use_container_width=True, key="editor_nu_local")
+                    # 1. TABLA INTERACTIVA EDITABLE (Categorías, montos, etc.)
+                    df_edited_nu = st.data_editor(
+                        df_extracted_nu, 
+                        num_rows="dynamic", 
+                        use_container_width=True, 
+                        key="editor_nu_local"
+                    )
                     
-                    # Salida en TSV para copiar
+                    # 2. CAJA DE TEXTO FORMATO TSV PARA COPIAR CON UN CLIC
                     tsv_data_nu = df_edited_nu.to_csv(index=False, sep='\t', header=False)
-                    st.markdown("#### Formato TSV para copiar y pegar en Google Sheets:")
+                    st.markdown("#### Formato TSV para copiar y pegar en la pestaña Movimientos:")
                     st.code(tsv_data_nu, language="text")
                     
+                    # 3. BOTÓN OPCIONAL PARA GUARDAR DIRECTO
                     if st.button("🚀 Guardar directamente en Google Sheets", key="btn_nu_local"):
                         df_total = pd.concat([df_base, df_edited_nu], ignore_index=True)
                         conn.update(worksheet="Movimientos", data=df_total)
-                        st.success("¡Egresos guardados con éxito!")
+                        st.success("¡Egresos guardados con éxito en Google Sheets!")
                         st.rerun()
                 else:
-                    st.warning("No se encontraron cargos en el PDF subido.")
+                    st.error("No se detectaron transacciones de egreso en el PDF. Verifica que sea un Estado de Cuenta de Nu válido.")
             except Exception as e:
                 st.error(f"Error procesando el PDF local: {e}")
 
