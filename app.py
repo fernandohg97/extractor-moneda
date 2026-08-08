@@ -279,7 +279,6 @@ else:
         st.info(f"📥 Cargando desde Google Drive: **{file_name}**")
         
         try:
-            # Descarga del archivo mediante la API REST de Google Drive con el Token de OAuth
             headers = {"Authorization": f"Bearer {token}"}
             response = requests.get(f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media", headers=headers)
             
@@ -288,16 +287,15 @@ else:
                 
                 if file_name.lower().endswith(".pdf"):
                     df_extracted = procesar_pdf_nu(file_bytes)
-                    st.success(f"¡Se procesaron {len(df_extracted)} cargos del PDF Nu exitosamente!")
                 else:
                     df_extracted = procesar_csv_odoo(file_bytes)
-                    st.success(f"¡Se procesaron {len(df_extracted)} ventas de Odoo exitosamente!")
 
                 if not df_extracted.empty:
+                    st.success(f"¡Se procesaron {len(df_extracted)} registros del archivo de Drive!")
                     df_edited = st.data_editor(df_extracted, num_rows="dynamic", use_container_width=True)
-                    tsv_data = df_edited.to_csv(index=False, sep='\t', header=False)
                     
-                    st.markdown("#### Formato TSV para Google Sheets:")
+                    tsv_data = df_edited.to_csv(index=False, sep='\t', header=False)
+                    st.markdown("#### Formato TSV para copiar y pegar en Google Sheets:")
                     st.code(tsv_data, language="text")
                     
                     if st.button("🚀 Guardar estos registros en Google Sheets"):
@@ -318,6 +316,7 @@ else:
 
     tab1, tab2 = st.tabs(["💳 Estado de Cuenta Nu (PDF)", "🛍️ Ventas Odoo (CSV)"])
     
+    # --- PESTAÑA NU ---
     with tab1:
         st.subheader("Importar Estado de Cuenta Nu")
         col_drive, col_local = st.columns(2)
@@ -329,19 +328,33 @@ else:
         with col_local:
             st.markdown("**Opción B: Desde dispositivo Local / Móvil**")
             pdf_file = st.file_uploader("Subir PDF local", type=["pdf"], key="pdf_nu_local")
-            if pdf_file:
+
+        # El procesamiento se hace fuera de las columnas a todo el ancho de la pantalla
+        if pdf_file is not None:
+            try:
                 df_extracted_nu = procesar_pdf_nu(pdf_file)
                 if not df_extracted_nu.empty:
-                    st.success(f"Se extrajeron {len(df_extracted_nu)} cargos correctamente.")
-                    df_edited = st.data_editor(df_extracted_nu, num_rows="dynamic", use_container_width=True)
-                    tsv_data = df_edited.to_csv(index=False, sep='\t', header=False)
-                    st.code(tsv_data, language="text")
+                    st.success(f"¡Se extrajeron {len(df_extracted_nu)} cargos correctamente!")
+                    
+                    # Tabla Interactiva
+                    df_edited_nu = st.data_editor(df_extracted_nu, num_rows="dynamic", use_container_width=True, key="editor_nu_local")
+                    
+                    # Salida en TSV para copiar
+                    tsv_data_nu = df_edited_nu.to_csv(index=False, sep='\t', header=False)
+                    st.markdown("#### Formato TSV para copiar y pegar en Google Sheets:")
+                    st.code(tsv_data_nu, language="text")
+                    
                     if st.button("🚀 Guardar directamente en Google Sheets", key="btn_nu_local"):
-                        df_total = pd.concat([df_base, df_edited], ignore_index=True)
+                        df_total = pd.concat([df_base, df_edited_nu], ignore_index=True)
                         conn.update(worksheet="Movimientos", data=df_total)
-                        st.success("¡Egresos guardados!")
+                        st.success("¡Egresos guardados con éxito!")
                         st.rerun()
+                else:
+                    st.warning("No se encontraron cargos en el PDF subido.")
+            except Exception as e:
+                st.error(f"Error procesando el PDF local: {e}")
 
+    # --- PESTAÑA ODOO ---
     with tab2:
         st.subheader("Importar Ventas Odoo")
         col_drive_csv, col_local_csv = st.columns(2)
@@ -353,15 +366,28 @@ else:
         with col_local_csv:
             st.markdown("**Opción B: Desde dispositivo Local / Móvil**")
             csv_file = st.file_uploader("Subir CSV local", type=["csv"], key="csv_odoo_local")
-            if csv_file:
+
+        # El procesamiento se hace fuera de las columnas a todo el ancho de la pantalla
+        if csv_file is not None:
+            try:
                 df_extracted_odoo = procesar_csv_odoo(csv_file)
                 if not df_extracted_odoo.empty:
-                    st.success(f"Se extrajeron {len(df_extracted_odoo)} ventas correctamente.")
-                    df_edited_odoo = st.data_editor(df_extracted_odoo, num_rows="dynamic", use_container_width=True)
+                    st.success(f"¡Se extrajeron {len(df_extracted_odoo)} ventas correctamente!")
+                    
+                    # Tabla Interactiva
+                    df_edited_odoo = st.data_editor(df_extracted_odoo, num_rows="dynamic", use_container_width=True, key="editor_odoo_local")
+                    
+                    # Salida en TSV para copiar
                     tsv_data_odoo = df_edited_odoo.to_csv(index=False, sep='\t', header=False)
+                    st.markdown("#### Formato TSV para copiar y pegar en Google Sheets:")
                     st.code(tsv_data_odoo, language="text")
+                    
                     if st.button("🚀 Guardar directamente en Google Sheets", key="btn_odoo_local"):
                         df_total = pd.concat([df_base, df_edited_odoo], ignore_index=True)
                         conn.update(worksheet="Movimientos", data=df_total)
-                        st.success("¡Ventas guardadas!")
+                        st.success("¡Ventas guardadas con éxito!")
                         st.rerun()
+                else:
+                    st.warning("No se encontraron ventas en el CSV subido.")
+            except Exception as e:
+                st.error(f"Error procesando el CSV local: {e}")
