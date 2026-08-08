@@ -85,7 +85,7 @@ def procesar_pdf_nu(file_stream, file_name=""):
     ano_corte = None
     mes_corte = None
     
-    # 1. Intentar detectar Fecha de corte en el texto del PDF
+    # 1. Detectar Fecha de corte
     match_corte = re.search(r"corte:\s*(\d{1,2})\s+de\s+([A-Za-z]+)\s+de\s+(\d{4})", texto_completo, re.IGNORECASE)
     if not match_corte:
         match_corte = re.search(r"corte:\s*(\d{1,2})\s+([A-Za-z]{3,10})\s+(\d{4})", texto_completo, re.IGNORECASE)
@@ -98,7 +98,6 @@ def procesar_pdf_nu(file_stream, file_name=""):
                 break
         ano_corte = match_corte.group(3)
 
-    # 2. Si no se detecta en el texto, buscar en el nombre del archivo (ej: "junio 2026.pdf")
     if not mes_corte and file_name:
         fn_lower = file_name.lower()
         for k, v in meses_dict.items():
@@ -109,7 +108,6 @@ def procesar_pdf_nu(file_stream, file_name=""):
         if match_ano_fn:
             ano_corte = match_ano_fn.group(1)
 
-    # Fallback al mes/año actual si no se logra identificar
     if not mes_corte:
         mes_corte = f"{datetime.now().month:02d}"
     if not ano_corte:
@@ -118,60 +116,81 @@ def procesar_pdf_nu(file_stream, file_name=""):
     registros = []
     lineas = texto_completo.split("\n")
     
+    # BANDERAS PARA DELIMITAR LA TABLA ESPECÍFICA
+    dentro_de_tabla_objetivo = False
+    
     for linea in lineas:
         l = linea.strip()
         if not l:
             continue
             
+        l_upper = l.upper()
         l_lower = l.lower()
-        # Omitir abonos, pagos a la tarjeta, bonificaciones y encabezados
-        if any(ignore in l_lower for ignore in ["pago recibido", "su pago", "bonificación", "saldo anterior", "total a pagar", "pago mínimo", "abono"]):
+        
+        # INICIO DE LA TABLA OBJETIVO:
+        # Busca encajar con "CARGOS, ABONOS Y COMPRAS REGULARES" o "COMPRAS REGULARES (NO A MESES)"
+        if "CARGOS" in l_upper and "COMPRAS REGULARES" in l_upper:
+            dentro_de_tabla_objetivo = True
             continue
-            
-        match_monto = re.search(r"\$\s*([\d,]+\.\d{2})", l)
-        if match_monto:
-            try:
-                monto_val = float(match_monto.group(1).replace(",", ""))
-                if monto_val <= 0:
-                    continue
-                
-                # Buscar patrón de fecha (día y mes del movimiento)
-                match_fecha = re.search(r"^(\d{1,2})\s+([A-Za-z]{3})", l)
-                if match_fecha:
-                    dia_mov = match_fecha.group(1).zfill(2)
-                    mes_mov_str = match_fecha.group(2).lower()
-                    mes_mov = meses_dict.get(mes_mov_str, mes_corte)
-                    
-                    # FILTRO CLAVE: Extraer únicamente los egresos pertenecientes al MES de corte
-                    if mes_mov != mes_corte:
-                        continue
-                else:
-                    dia_mov = "01"
-                
-                # Limpiar la descripción
-                desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}", "", l)
-                desc = re.sub(r"\$\s*[\d,]+\.\d{2}", "", desc).strip()
-                if not desc:
-                    desc = "Gasto Nu"
-                    
-                fecha_fmt = f"{ano_corte}-{mes_corte}-{dia_mov}"
-                cat = categorizar_nu(desc)
-                
-                registros.append({
-                    "Tipo": "Gasto",
-                    "Monto": monto_val,
-                    "Categoria": cat,
-                    "Metodo_Pago": "NU (CREDITO)",
-                    "Fecha": fecha_fmt,
-                    "Descripcion": desc
-                })
-            except ValueError:
+        elif "COMPRAS REGULARES (NO A MESES)" in l_upper:
+            dentro_de_tabla_objetivo = True
+            continue
+
+        # FIN DE LA TABLA OBJETIVO:
+        # Si llegamos a otra sección como Meses sin Intereses, Promociones o Aclaraciones, detenemos la lectura
+        if dentro_de_tabla_objetivo:
+            if any(fin in l_upper for fin in ["COMPRAS A MESES", "PLAN DE PAGOS", "ACLARACIONES", "INFORMACIÓN DE INTERESES"]):
+                dentro_de_tabla_objetivo = False
+                break
+
+        # EXTRAER SOLO SI ESTAMOS DENTRO DE LA TABLA OBJETIVO
+        if dentro_de_tabla_objetivo:
+            # Omitir abonos, pagos a la tarjeta, bonificaciones y encabezados
+            if any(ignore in l_lower for ignore in ["pago recibido", "su pago", "bonificación", "saldo anterior", "total a pagar", "pago mínimo", "abono"]):
                 continue
+                
+            match_monto = re.search(r"\$\s*([\d,]+\.\d{2})", l)
+            if match_monto:
+                try:
+                    monto_val = float(match_monto.group(1).replace(",", ""))
+                    if monto_val <= 0:
+                        continue
+                    
+                    # Buscar día y mes de la transacción
+                    match_fecha = re.search(r"^(\d{1,2})\s+([A-Za-z]{3})", l)
+                    if match_fecha:
+                        dia_mov = match_fecha.group(1).zfill(2)
+                        mes_mov_str = match_fecha.group(2).lower()
+                        mes_mov = meses_dict.get(mes_mov_str, mes_corte)
+                        
+                        # FILTRO DE MES DE CORTE
+                        if mes_mov != mes_corte:
+                            continue
+                    else:
+                        dia_mov = "01"
+                    
+                    desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}", "", l)
+                    desc = re.sub(r"\$\s*[\d,]+\.\d{2}", "", desc).strip()
+                    if not desc:
+                        desc = "Gasto Nu"
+                        
+                    fecha_fmt = f"{ano_corte}-{mes_corte}-{dia_mov}"
+                    cat = categorizar_nu(desc)
+                    
+                    registros.append({
+                        "Tipo": "Gasto",
+                        "Monto": monto_val,
+                        "Categoria": cat,
+                        "Metodo_Pago": "NU (CREDITO)",
+                        "Fecha": fecha_fmt,
+                        "Descripcion": desc
+                    })
+                except ValueError:
+                    continue
 
     df_res = pd.DataFrame(registros)
     if not df_res.empty:
         df_res = df_res.drop_duplicates(subset=["Monto", "Fecha", "Descripcion"])
-        # Ordenar por fecha cronológicamente
         df_res = df_res.sort_values(by="Fecha").reset_index(drop=True)
         df_res = df_res[['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion']]
     return df_res
