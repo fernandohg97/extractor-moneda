@@ -58,10 +58,9 @@ df_base = cargar_datos()
 
 def categorizar_nu(descripcion):
     desc_lower = str(descripcion).lower()
-    keywords_dayana = [
-        "abts el mayorista", "teip impresiones", "abts ctrl mayorista pr",
-        "envases y plasticos", "abts el mayorista mark", "abts guga ensenada", "ley ensenada"
-    ]
+    # Regla por palabras clave: Mayorista, Teip, Guga, Envases, Ley
+    keywords_dayana = ["mayorista", "teip", "guga", "envases", "ley"]
+    
     for kw in keywords_dayana:
         if kw in desc_lower:
             return "Produccion Dayana"
@@ -77,101 +76,84 @@ def procesar_pdf_nu(file_stream, file_name=""):
             
     meses_dict = {
         "ene": "01", "feb": "02", "mar": "03", "abr": "04", "may": "05", "jun": "06",
-        "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12",
-        "enero": "01", "febrero": "02", "marzo": "03", "abril": "04", "mayo": "05", "junio": "06",
-        "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
+        "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12"
     }
-    
-    ano_corte = None
-    mes_corte = None
-    
-    # 1. Intentar detectar Fecha de corte en el texto del PDF
-    match_corte = re.search(r"corte:\s*(\d{1,2})\s+de\s+([A-Za-z]+)\s+de\s+(\d{4})", texto_completo, re.IGNORECASE)
-    if not match_corte:
-        match_corte = re.search(r"corte:\s*(\d{1,2})\s+([A-Za-z]{3,10})\s+(\d{4})", texto_completo, re.IGNORECASE)
-        
-    if match_corte:
-        m_str = match_corte.group(2).lower()
-        for k, v in meses_dict.items():
-            if m_str.startswith(k):
-                mes_corte = v
-                break
-        ano_corte = match_corte.group(3)
-
-    # 2. Si no se detecta en el texto, buscar en el nombre del archivo (ej: "junio 2026.pdf")
-    if not mes_corte and file_name:
-        fn_lower = file_name.lower()
-        for k, v in meses_dict.items():
-            if k in fn_lower:
-                mes_corte = v
-                break
-        match_ano_fn = re.search(r"\b(20\d{2})\b", fn_lower)
-        if match_ano_fn:
-            ano_corte = match_ano_fn.group(1)
-
-    # Fallback al mes/año actual si no se logra identificar
-    if not mes_corte:
-        mes_corte = f"{datetime.now().month:02d}"
-    if not ano_corte:
-        ano_corte = str(datetime.now().year)
 
     registros = []
     lineas = texto_completo.split("\n")
+    
+    dentro_de_tabla = False
     
     for linea in lineas:
         l = linea.strip()
         if not l:
             continue
             
-        l_lower = l.lower()
-        # Omitir abonos, pagos a la tarjeta, bonificaciones y encabezados
-        if any(ignore in l_lower for ignore in ["pago recibido", "su pago", "bonificación", "saldo anterior", "total a pagar", "pago mínimo", "abono"]):
+        l_upper = l.upper()
+        
+        # Activar lectura al encontrar el encabezado de la tabla
+        if "CARGOS, ABONOS Y COMPRAS REGULARES" in l_upper:
+            dentro_de_tabla = True
             continue
             
-        match_monto = re.search(r"\$\s*([\d,]+\.\d{2})", l)
-        if match_monto:
-            try:
-                monto_val = float(match_monto.group(1).replace(",", ""))
-                if monto_val <= 0:
-                    continue
-                
-                # Buscar patrón de fecha (día y mes del movimiento)
-                match_fecha = re.search(r"^(\d{1,2})\s+([A-Za-z]{3})", l)
-                if match_fecha:
-                    dia_mov = match_fecha.group(1).zfill(2)
-                    mes_mov_str = match_fecha.group(2).lower()
-                    mes_mov = meses_dict.get(mes_mov_str, mes_corte)
-                    
-                    # FILTRO CLAVE: Extraer únicamente los egresos pertenecientes al MES de corte
-                    if mes_mov != mes_corte:
-                        continue
-                else:
-                    dia_mov = "01"
-                
-                # Limpiar la descripción
-                desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}", "", l)
-                desc = re.sub(r"\$\s*[\d,]+\.\d{2}", "", desc).strip()
-                if not desc:
-                    desc = "Gasto Nu"
-                    
-                fecha_fmt = f"{ano_corte}-{mes_corte}-{dia_mov}"
-                cat = categorizar_nu(desc)
-                
-                registros.append({
-                    "Tipo": "Gasto",
-                    "Monto": monto_val,
-                    "Categoria": cat,
-                    "Metodo_Pago": "NU (CREDITO)",
-                    "Fecha": fecha_fmt,
-                    "Descripcion": desc
-                })
-            except ValueError:
+        # Desactivar si llega a otra sección
+        if dentro_de_tabla and any(fin in l_upper for fin in ["COMPRAS A MESES", "PLAN DE PAGOS", "ACLARACIONES", "INFORMACIÓN DE INTERESES"]):
+            dentro_de_tabla = False
+            break
+
+        if dentro_de_tabla:
+            # FILTRO EXCLUSIVO DE EGRESOS: Buscar montos positivos +$...
+            # Descartar abonos con -$ o frases de pago
+            if "-$" in l or "grácias por tu pago" in l.lower() or "abono" in l.lower():
                 continue
+
+            match_cargo = re.search(r"\+\$\s*([\d,]+\.\d{2})", l)
+            if match_cargo:
+                try:
+                    monto_val = float(match_cargo.group(1).replace(",", ""))
+                    
+                    # PATRÓN DE FECHAS: Capturar (Fecha Operación) y (Fecha Cargo)
+                    # Ejemplo: "22 MAY 2026 23 MAY 2026 Serv Chapluk | RFC: S.I."
+                    match_fechas = re.search(r"(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})", l)
+                    
+                    if match_fechas:
+                        fecha_cargo_raw = match_fechas.group(2) # Tomar exactamente FECHA DE CARGO (la 2da fecha)
+                        partes_fecha = fecha_cargo_raw.split()
+                        
+                        dia_cargo = partes_fecha[0].zfill(2)
+                        mes_cargo_str = partes_fecha[1].lower()[:3]
+                        ano_cargo = partes_fecha[2]
+                        
+                        mes_cargo = meses_dict.get(mes_cargo_str, "01")
+                        fecha_fmt = f"{ano_cargo}-{mes_cargo}-{dia_cargo}"
+                    else:
+                        # Fallback si solo trae día y mes
+                        fecha_fmt = datetime.now().strftime("%Y-%m-%d")
+
+                    # Extraer Descripción limpiando fechas, RFC y montos
+                    desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4}", "", l)
+                    desc = re.sub(r"\+\$\s*[\d,]+\.\d{2}", "", desc)
+                    desc = re.sub(r"\|\s*RFC:.*", "", desc, flags=re.IGNORECASE).strip()
+                    
+                    if not desc:
+                        desc = "Gasto Nu"
+
+                    cat = categorizar_nu(desc)
+                    
+                    registros.append({
+                        "Tipo": "Gasto",
+                        "Monto": monto_val,
+                        "Categoria": cat,
+                        "Metodo_Pago": "NU (CREDITO)",
+                        "Fecha": fecha_fmt, # Fecha de Cargo
+                        "Descripcion": desc # Descripción limpia
+                    })
+                except ValueError:
+                    continue
 
     df_res = pd.DataFrame(registros)
     if not df_res.empty:
         df_res = df_res.drop_duplicates(subset=["Monto", "Fecha", "Descripcion"])
-        # Ordenar por fecha cronológicamente
         df_res = df_res.sort_values(by="Fecha").reset_index(drop=True)
         df_res = df_res[['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion']]
     return df_res
