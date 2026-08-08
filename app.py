@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import re
-import json
 from datetime import datetime, timedelta
 from pypdf import PdfReader
 from io import BytesIO
@@ -12,11 +11,9 @@ from pdf_generator import generar_pdf_reporte
 
 st.set_page_config(page_title="Finanzas Dayana", layout="wide")
 
-# Lectura de credenciales para Google Drive Picker
 API_KEY = st.secrets["google_picker"].get("api_key", "")
 CLIENT_ID = st.secrets["google_picker"].get("client_id", "")
 
-# Conexión con Google Sheets (Base de Datos)
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def cargar_datos():
@@ -30,12 +27,11 @@ def cargar_datos():
         df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
         df = df.dropna(subset=['Fecha'])
         return df
-    except Exception as e:
+    except Exception:
         return pd.DataFrame(columns=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
 
 df_base = cargar_datos()
 
-# --- LÓGICA DE EXTRACCIÓN (NU Y ODOO) ---
 def categorizar_nu(descripcion):
     desc_lower = str(descripcion).lower()
     keywords_dayana = [
@@ -54,72 +50,76 @@ def procesar_pdf_nu(file_stream):
         txt = page.extract_text()
         if txt:
             texto_completo += txt + "\n"
+            
+    # Detectar mes y año de corte
+    meses_dict = {
+        "ene": "01", "feb": "02", "mar": "03", "abr": "04", "may": "05", "jun": "06",
+        "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12"
+    }
     
-    # 1. Intentar detectar Fecha de Corte en el documento
-    corte_match = re.search(r"corte:\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})", texto_completo, re.IGNORECASE)
-    meses = {"ene": "01", "feb": "02", "mar": "03", "abr": "04", "may": "05", "jun": "06", 
-             "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12"}
+    # Buscar año y mes en el documento
+    ano = str(datetime.now().year)
+    mes = f"{datetime.now().month:02d}"
     
-    if corte_match:
-        ano = corte_match.group(3)
-        mes_str = corte_match.group(2)[:3].lower()
-        mes = meses.get(mes_str, "01")
-    else:
-        ano = str(datetime.now().year)
-        mes = f"{datetime.now().month:02d}"
+    match_corte = re.search(r"(\d{1,2})\s+de\s+([A-Za-z]{3,10})\s+de\s+(\d{4})", texto_completo, re.IGNORECASE)
+    if not match_corte:
+        match_corte = re.search(r"(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})", texto_completo, re.IGNORECASE)
+        
+    if match_corte:
+        m_str = match_corte.group(2)[:3].lower()
+        if m_str in meses_dict:
+            mes = meses_dict[m_str]
+            ano = match_corte.group(3)
 
     registros = []
-    
-    # 2. Expresiones regulares flexibles para encontrar cargos en los estados de cuenta de Nu
-    # Cubre lineas como: "23 JUN Mayorista $197.66" o "23 Jun $197.66"
-    patrones = [
-        r"(\d{1,2}\s+[A-Za-z]{3})\s+(.*?)\s+\$\s*([\d,]+\.\d{2})",
-        r"(\d{1,2}\s+[A-Za-z]{3})\s+\$\s*([\d,]+\.\d{2})\s+(.*)"
-    ]
-    
     lineas = texto_completo.split("\n")
+    
     for linea in lineas:
-        linea_str = linea.strip()
-        # Omitir abonos o pagos a la tarjeta
-        if "pago recibido" in linea_str.lower() or "su pago" in linea_str.lower() or "bonificación" in linea_str.lower():
+        l = linea.strip()
+        if not l:
             continue
             
-        for pat in patrones:
-            match = re.search(pat, linea_str)
-            if match:
-                groups = match.groups()
-                dia_mes = groups[0]
-                
-                # Extraer monto y descripción según el patrón
-                if "$" in groups[1]:
-                    monto_str = groups[1]
-                    desc = groups[2] if len(groups) > 2 else "Gasto Nu"
-                else:
-                    desc = groups[1]
-                    monto_str = groups[2]
-                
-                try:
-                    monto = float(monto_str.replace(",", "").strip())
-                    if monto > 0:
-                        dia = dia_mes.split()[0].zfill(2)
-                        fecha_fmt = f"{ano}-{mes}-{dia}"
-                        cat = categorizar_nu(desc)
-                        
-                        registros.append({
-                            "Tipo": "Gasto",
-                            "Monto": monto,
-                            "Categoria": cat,
-                            "Metodo_Pago": "NU (CREDITO)",
-                            "Fecha": fecha_fmt,
-                            "Descripcion": desc.strip() if desc.strip() else "Gasto Nu"
-                        })
-                        break
-                except ValueError:
+        l_lower = l.lower()
+        # Omitir abonos, pagos recibidos, encabezados o resúmenes de saldo
+        if any(ignore in l_lower for ignore in ["pago recibido", "su pago", "bonificación", "saldo anterior", "total a pagar", "pago mínimo"]):
+            continue
+            
+        # Buscar patrones de día + texto + monto con signo de pesos
+        # Ej: "15 JUN Supermercado $ 150.00" o "15 JUN $150.00 Supermercado"
+        match_monto = re.search(r"\$\s*([\d,]+\.\d{2})", l)
+        if match_monto:
+            try:
+                monto_val = float(match_monto.group(1).replace(",", ""))
+                if monto_val <= 0:
                     continue
+                
+                # Buscar el día
+                match_dia = re.search(r"^(\d{1,2})\s+([A-Za-z]{3})", l)
+                dia = match_dia.group(1).zfill(2) if match_dia else "01"
+                
+                # Extraer la descripción limpiando montos y fechas
+                desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}", "", l)
+                desc = re.sub(r"\$\s*[\d,]+\.\d{2}", "", desc).strip()
+                if not desc:
+                    desc = "Gasto Nu"
+                    
+                fecha_fmt = f"{ano}-{mes}-{dia}"
+                cat = categorizar_nu(desc)
+                
+                registros.append({
+                    "Tipo": "Gasto",
+                    "Monto": monto_val,
+                    "Categoria": cat,
+                    "Metodo_Pago": "NU (CREDITO)",
+                    "Fecha": fecha_fmt,
+                    "Descripcion": desc
+                })
+            except ValueError:
+                continue
 
     df_res = pd.DataFrame(registros)
     if not df_res.empty:
-        # Asegurar el orden exacto de columnas para Google Sheets (Movimientos)
+        df_res = df_res.drop_duplicates(subset=["Monto", "Fecha", "Descripcion"])
         df_res = df_res[['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion']]
     return df_res
 
@@ -144,9 +144,11 @@ def procesar_csv_odoo(file_stream):
             "Fecha": fecha_fmt,
             "Descripcion": desc
         })
-    return pd.DataFrame(registros)
+    df_res = pd.DataFrame(registros)
+    if not df_res.empty:
+        df_res = df_res[['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion']]
+    return df_res
 
-# --- COMPONENTE VISUAL GOOGLE DRIVE PICKER ---
 def render_drive_picker(mime_type, key_id):
     html_code = f"""
     <!DOCTYPE html>
@@ -197,10 +199,11 @@ def render_drive_picker(mime_type, key_id):
             view.setMimeTypes(mimeType);
             const picker = new google.picker.PickerBuilder()
                 .enableFeature(google.picker.Feature.NAV_HIDDEN)
-                .setAppId(clientId)
+                .setAppId(clientId.split('-')[0])
                 .setOAuthToken(accessToken)
                 .addView(view)
                 .setDeveloperKey(developerKey)
+                .setOrigin(window.location.protocol + '//' + window.location.host)
                 .setCallback(pickerCallback)
                 .build();
             picker.setVisible(true);
@@ -212,8 +215,6 @@ def render_drive_picker(mime_type, key_id):
             const doc = data.docs[0];
             const fileId = doc.id;
             const fileName = doc.name;
-            
-            // Enviar datos seleccionados a Streamlit mediante la URL query params
             const targetUrl = window.parent.location.pathname + '?drive_file_id=' + fileId + '&auth_token=' + accessToken + '&file_name=' + encodeURIComponent(fileName);
             window.parent.location.href = targetUrl;
           }}
@@ -224,13 +225,9 @@ def render_drive_picker(mime_type, key_id):
     """
     components.html(html_code, height=55)
 
-# --- NAVEGACIÓN EN SIDEBAR ---
 st.sidebar.title("📌 Navegación")
 pagina = st.sidebar.radio("Ir a:", ["📊 Dashboard Financiero", "📄 Extractor Nu / Odoo"])
 
-# ==========================================
-# PÁGINA 1: DASHBOARD FINANCIERO
-# ==========================================
 if pagina == "📊 Dashboard Financiero":
     st.title("Analiza tus finanzas con reportes detallados")
     st.caption("Visualiza todas tus transacciones organizadas por fecha, categoría y tipo")
@@ -300,14 +297,10 @@ if pagina == "📊 Dashboard Financiero":
     st.markdown(f"### Lista de Transacciones ({len(df_filtrado)} registros)")
     st.dataframe(df_filtrado, use_container_width=True)
 
-# ==========================================
-# PÁGINA 2: EXTRACTOR NU / ODOO
-# ==========================================
 else:
     st.title("Extracción y Registro de Gastos e Ingresos")
     st.caption("Importa archivos desde Google Drive o tu almacenamiento local para procesar movimientos.")
 
-    # PROCESAMIENTO DE ARCHIVOS PROVENIENTES DE GOOGLE DRIVE PICKER
     query_params = st.query_params
     if "drive_file_id" in query_params and "auth_token" in query_params:
         file_id = query_params["drive_file_id"]
@@ -354,7 +347,6 @@ else:
 
     tab1, tab2 = st.tabs(["💳 Estado de Cuenta Nu (PDF)", "🛍️ Ventas Odoo (CSV)"])
     
-    # --- PESTAÑA NU ---
     with tab1:
         st.subheader("Importar Estado de Cuenta Nu")
         col_drive, col_local = st.columns(2)
@@ -369,14 +361,12 @@ else:
 
         st.markdown("---")
 
-        # RENDERIZADO COMPLETO FUERA DE LAS COLUMNAS
         if pdf_file is not None:
             try:
                 df_extracted_nu = procesar_pdf_nu(pdf_file)
                 if not df_extracted_nu.empty:
                     st.success(f"¡Se extrajeron {len(df_extracted_nu)} cargos de este estado de cuenta!")
                     
-                    # 1. TABLA INTERACTIVA EDITABLE (Categorías, montos, etc.)
                     df_edited_nu = st.data_editor(
                         df_extracted_nu, 
                         num_rows="dynamic", 
@@ -384,23 +374,20 @@ else:
                         key="editor_nu_local"
                     )
                     
-                    # 2. CAJA DE TEXTO FORMATO TSV PARA COPIAR CON UN CLIC
                     tsv_data_nu = df_edited_nu.to_csv(index=False, sep='\t', header=False)
                     st.markdown("#### Formato TSV para copiar y pegar en la pestaña Movimientos:")
                     st.code(tsv_data_nu, language="text")
                     
-                    # 3. BOTÓN OPCIONAL PARA GUARDAR DIRECTO
                     if st.button("🚀 Guardar directamente en Google Sheets", key="btn_nu_local"):
                         df_total = pd.concat([df_base, df_edited_nu], ignore_index=True)
                         conn.update(worksheet="Movimientos", data=df_total)
                         st.success("¡Egresos guardados con éxito en Google Sheets!")
                         st.rerun()
                 else:
-                    st.error("No se detectaron transacciones de egreso en el PDF. Verifica que sea un Estado de Cuenta de Nu válido.")
+                    st.error("No se detectaron transacciones en el PDF. Verifica que el archivo sea un Estado de Cuenta de Nu.")
             except Exception as e:
                 st.error(f"Error procesando el PDF local: {e}")
 
-    # --- PESTAÑA ODOO ---
     with tab2:
         st.subheader("Importar Ventas Odoo")
         col_drive_csv, col_local_csv = st.columns(2)
@@ -413,27 +400,31 @@ else:
             st.markdown("**Opción B: Desde dispositivo Local / Móvil**")
             csv_file = st.file_uploader("Subir CSV local", type=["csv"], key="csv_odoo_local")
 
-        # El procesamiento se hace fuera de las columnas a todo el ancho de la pantalla
+        st.markdown("---")
+
         if csv_file is not None:
             try:
                 df_extracted_odoo = procesar_csv_odoo(csv_file)
                 if not df_extracted_odoo.empty:
                     st.success(f"¡Se extrajeron {len(df_extracted_odoo)} ventas correctamente!")
                     
-                    # Tabla Interactiva
-                    df_edited_odoo = st.data_editor(df_extracted_odoo, num_rows="dynamic", use_container_width=True, key="editor_odoo_local")
+                    df_edited_odoo = st.data_editor(
+                        df_extracted_odoo, 
+                        num_rows="dynamic", 
+                        use_container_width=True, 
+                        key="editor_odoo_local"
+                    )
                     
-                    # Salida en TSV para copiar
                     tsv_data_odoo = df_edited_odoo.to_csv(index=False, sep='\t', header=False)
-                    st.markdown("#### Formato TSV para copiar y pegar en Google Sheets:")
+                    st.markdown("#### Formato TSV para copiar y pegar en la pestaña Movimientos:")
                     st.code(tsv_data_odoo, language="text")
                     
                     if st.button("🚀 Guardar directamente en Google Sheets", key="btn_odoo_local"):
                         df_total = pd.concat([df_base, df_edited_odoo], ignore_index=True)
                         conn.update(worksheet="Movimientos", data=df_total)
-                        st.success("¡Ventas guardadas con éxito!")
+                        st.success("¡Ventas guardadas con éxito en Google Sheets!")
                         st.rerun()
                 else:
-                    st.warning("No se encontraron ventas en el CSV subido.")
+                    st.error("No se detectaron transacciones de ventas en el CSV.")
             except Exception as e:
                 st.error(f"Error procesando el CSV local: {e}")
