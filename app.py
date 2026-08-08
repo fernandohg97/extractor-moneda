@@ -15,11 +15,14 @@ def cargar_datos():
         if df is None or df.empty:
             return pd.DataFrame(columns=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
         
-        # Corrección de conversión de formato de fecha (soporta DD/MM/YYYY y AAAA-MM-DD)
+        # Normalización de nombres de columnas (elimina tildes y espacios extras)
+        df.columns = df.columns.str.strip().str.replace('Categoría', 'Categoria').str.replace('Método_Pago', 'Metodo_Pago')
+        
+        # Corrección de conversión de fechas (soporta DD/MM/YYYY y AAAA-MM-DD)
         df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce').dt.date
         df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
         
-        # Eliminar registros con fechas inválidas o vacías
+        # Filtrar filas vacías o con fechas inválidas
         df = df.dropna(subset=['Fecha'])
         return df
     except Exception as e:
@@ -28,25 +31,29 @@ def cargar_datos():
 
 df_base = cargar_datos()
 
-# Sidebar: Cargar nuevos registros semanal/mensual
+# --- SIDEBAR: CARGAR NUEVOS MOVIMIENTOS ---
 st.sidebar.title("📥 Cargar Movimientos")
-opcion_carga = st.sidebar.radio("Fuente de datos:", ["Formato TSV / Pegado directo", "Extraer PDF Nu / CSV Odoo"])
+opcion_carga = st.sidebar.radio("Fuente de datos:", ["Formato TSV / Pegado directo"])
 
 if opcion_carga == "Formato TSV / Pegado directo":
     raw_tsv = st.sidebar.text_area("Pega aquí las filas en formato TSV (de tu app de extracción):")
     if st.sidebar.button("Guardar en Base de Datos"):
         if raw_tsv.strip():
-            # Procesar datos pegados
-            from io import StringIO
-            df_nuevos = pd.read_csv(StringIO(raw_tsv), sep='\t', names=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
-            df_total = pd.concat([df_base, df_nuevos], ignore_index=True)
-            conn.update(worksheet="Movimientos", data=df_total)
-            st.sidebar.success("¡Registros guardados en Google Sheets exitosamente!")
-            st.rerun()
+            try:
+                from io import StringIO
+                df_nuevos = pd.read_csv(StringIO(raw_tsv), sep='\t', names=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
+                
+                # Unir con la base actual y actualizar Google Sheets
+                df_total = pd.concat([df_base, df_nuevos], ignore_index=True)
+                conn.update(worksheet="Movimientos", data=df_total)
+                st.sidebar.success("¡Registros guardados en Google Sheets exitosamente!")
+                st.rerun()
+            except Exception as ex:
+                st.sidebar.error(f"Error al procesar el texto: {ex}")
 
 # --- HEADER DEL DASHBOARD ---
 st.title("Analiza tus finanzas con reportes detallados")
-st.caption("Visualiza todas tus transacciones organizadas por fecha, categoria y tipo")
+st.caption("Visualiza todas tus transacciones organizadas por fecha, categoría y tipo")
 
 # --- SECCIÓN DE FILTROS ---
 col_f1, col_f2, col_f3, col_f4 = st.columns(4)
@@ -76,16 +83,23 @@ with col_f2:
 with col_f3:
     filtro_tipo = st.selectbox("Tipo de Registro", ["TODOS", "Ingreso", "Gasto"])
 
-with col_f4:
-    categorias_opts = ["TODAS"] + list(df_base['Categoria'].dropna().unique()) if not df_base.empty else ["TODAS"]
-    filtro_cat = st.selectbox("Categoria", categorias_opts)
+# Obtención segura de opciones para el menú desplegable de categorías
+if not df_base.empty and 'Categoria' in df_base.columns:
+    categorias_opts = ["TODAS"] + sorted(list(df_base['Categoria'].dropna().unique()))
+else:
+    categorias_opts = ["TODAS"]
 
-# Aplicar Filtros
+with col_f4:
+    filtro_cat = st.selectbox("Categoría", categorias_opts)
+
+# APLICAR FILTROS
 df_filtrado = df_base.copy()
 if not df_filtrado.empty:
     df_filtrado = df_filtrado[(df_filtrado['Fecha'] >= f_inicio) & (df_filtrado['Fecha'] <= f_final)]
+    
     if filtro_tipo != "TODOS":
         df_filtrado = df_filtrado[df_filtrado['Tipo'] == filtro_tipo]
+        
     if filtro_cat != "TODAS":
         df_filtrado = df_filtrado[df_filtrado['Categoria'] == filtro_cat]
 
@@ -94,12 +108,12 @@ ingresos = df_filtrado[df_filtrado['Tipo'] == 'Ingreso']['Monto'].sum() if not d
 egresos = df_filtrado[df_filtrado['Tipo'] == 'Gasto']['Monto'].sum() if not df_filtrado.empty else 0.0
 balance = ingresos - egresos
 
-# --- BOTONES DE EXPORTACIÓN Y INDICADORES ---
+# --- BOTONES DE EXPORTACIÓN ---
 col_exp1, col_exp2 = st.columns(2)
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 with col_exp1:
     csv_data = df_filtrado.to_csv(index=False).encode('utf-8')
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     nombre_csv = f"reporte_{f_inicio}_a_{f_final}_{timestamp}.csv"
     st.download_button("📥 Exportar CSV", data=csv_data, file_name=nombre_csv, mime="text/csv", use_container_width=True)
 
@@ -108,6 +122,8 @@ with col_exp2:
         pdf_bytes = generar_pdf_reporte(df_filtrado, f_inicio, f_final, ingresos, egresos, balance)
         nombre_pdf = f"reporte_{f_inicio}_a_{f_final}_{timestamp}.pdf"
         st.download_button("📄 Exportar PDF", data=pdf_bytes, file_name=nombre_pdf, mime="application/pdf", use_container_width=True)
+    else:
+        st.button("📄 Exportar PDF (Sin datos)", disabled=True, use_container_width=True)
 
 st.markdown("---")
 
@@ -117,5 +133,6 @@ c_ing.metric("TOTAL DE INGRESOS", f"${ingresos:,.2f}")
 c_egr.metric("TOTAL DE EGRESOS", f"-${egresos:,.2f}")
 c_bal.metric("BALANCE DEL PERÍODO", f"${balance:,.2f}")
 
-st.markdown("### Lista de Transacciones")
+# DATAFRAME FINAL
+st.markdown(f"### Lista de Transacciones ({len(df_filtrado)} registros)")
 st.dataframe(df_filtrado, use_container_width=True)
