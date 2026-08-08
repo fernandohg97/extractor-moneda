@@ -166,7 +166,7 @@ def procesar_csv_odoo(file_stream):
         ref_orden = str(row.get("Referencia de la orden", "")).strip()
         ref_cliente = str(row.get("Referencia del cliente", "")).strip()
         monto = float(row.get("Total", 0))
-        fecha_raw = str(row.get("Fecha de creacion", row.get("Fecha de creación", datetime.now().strftime("%Y-%m-%d"))))
+        fecha_raw = str(row.get("Fecha de entrega", row.get("Fecha de entrega", datetime.now().strftime("%Y-%m-%d"))))
         
         fecha_fmt = fecha_raw.split()[0]
         desc = f"{cliente} - {ref_orden} - {ref_cliente}".strip(" -")
