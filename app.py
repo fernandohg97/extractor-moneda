@@ -90,21 +90,29 @@ def procesar_pdf_nu(file_stream, file_name=""):
             continue
             
         l_upper = l.upper()
+        l_lower = l.lower()
         
-        # Activar lectura al encontrar el encabezado de la tabla
-        if "CARGOS, ABONOS Y COMPRAS REGULARES" in l_upper:
+        # Activar lectura al encontrar el encabezado de la tabla de compras regulares
+        if "CARGOS, ABONOS Y COMPRAS REGULARES" in l_upper or "COMPRAS REGULARES (NO A MESES)" in l_upper:
             dentro_de_tabla = True
             continue
             
-        # Desactivar si llega a otra sección
+        # Desactivar si llega a otra sección del documento
         if dentro_de_tabla and any(fin in l_upper for fin in ["COMPRAS A MESES", "PLAN DE PAGOS", "ACLARACIONES", "INFORMACIÓN DE INTERESES"]):
             dentro_de_tabla = False
             break
 
         if dentro_de_tabla:
-            # FILTRO EXCLUSIVO DE EGRESOS: Buscar montos positivos +$...
-            # Descartar abonos con -$ o frases de pago
-            if "-$" in l or "grácias por tu pago" in l.lower() or "abono" in l.lower():
+            # IGNORAR EXPLÍCITAMENTE TOTALES, RESÚMENES Y ABONOS
+            if any(ignore in l_lower for ignore in [
+                "total de cargos", 
+                "total de abonos", 
+                "total de compras", 
+                "grácias por tu pago", 
+                "gracias por tu pago", 
+                "abono", 
+                "-$"
+            ]):
                 continue
 
             match_cargo = re.search(r"\+\$\s*([\d,]+\.\d{2})", l)
@@ -127,7 +135,6 @@ def procesar_pdf_nu(file_stream, file_name=""):
                         mes_cargo = meses_dict.get(mes_cargo_str, "01")
                         fecha_fmt = f"{ano_cargo}-{mes_cargo}-{dia_cargo}"
                     else:
-                        # Fallback si solo trae día y mes
                         fecha_fmt = datetime.now().strftime("%Y-%m-%d")
 
                     # Extraer Descripción limpiando fechas, RFC y montos
@@ -157,7 +164,6 @@ def procesar_pdf_nu(file_stream, file_name=""):
         df_res = df_res.sort_values(by="Fecha").reset_index(drop=True)
         df_res = df_res[['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion']]
     return df_res
-
 def procesar_csv_odoo(file_stream):
     df_odoo = pd.read_csv(file_stream)
     registros = []
