@@ -10,12 +10,20 @@ st.set_page_config(page_title="Dashboard Financiero Dayana", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def cargar_datos():
-    df = conn.read(worksheet="Movimientos", ttl=0)
-    if df.empty:
+    try:
+        # Pasa worksheet="Movimientos" de forma explícita
+        df = conn.read(worksheet="Movimientos", ttl=0)
+        if df is None or df.empty:
+            return pd.DataFrame(columns=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
+        
+        # Limpieza básica de datos
+        df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
+        df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
+        return df
+    except Exception as e:
+        # Si la hoja está vacía o recién creada, devuelve un DataFrame estructurado para evitar que colapse la app
+        st.warning(f"Nota sobre la base de datos: {e}")
         return pd.DataFrame(columns=['Tipo', 'Monto', 'Categoria', 'Metodo_Pago', 'Fecha', 'Descripcion'])
-    df['Fecha'] = pd.to_datetime(df['Fecha']).dt.date
-    df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
-    return df
 
 df_base = cargar_datos()
 
