@@ -109,7 +109,6 @@ def procesar_pdf_nu(file_stream, file_name=""):
         "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
     }
 
-    # Detectar año de corte (del texto o del nombre del archivo)
     ano_corte = str(datetime.now().year)
     match_ano = re.search(r"\b(20\d{2})\b", texto_completo)
     if not match_ano and file_name:
@@ -119,6 +118,7 @@ def procesar_pdf_nu(file_stream, file_name=""):
 
     registros = []
     lineas = texto_completo.split("\n")
+    
     dentro_de_tabla = False
     
     for linea in lineas:
@@ -129,18 +129,15 @@ def procesar_pdf_nu(file_stream, file_name=""):
         l_upper = l.upper()
         l_lower = l.lower()
         
-        # Activar lectura con palabras clave del encabezado
-        if any(h in l_upper for h in ["CARGOS, ABONOS", "COMPRAS REGULARES", "FECHA DE CARGO", "FECHA DE LA OPERACIÓN", "DESCRIPCIÓN DEL MOVIMIENTO"]):
+        if any(h in l_upper for h in ["CARGOS, ABONOS", "COMPRAS REGULARES", "FECHA DE LA OPERACIÓN", "DESCRIPCIÓN DEL MOVIMIENTO"]):
             dentro_de_tabla = True
             continue
             
-        # Desactivar lectura si llega a secciones de meses sin intereses o resúmenes
         if dentro_de_tabla and any(fin in l_upper for fin in ["COMPRAS A MESES", "PLAN DE PAGOS", "ACLARACIONES", "INFORMACIÓN DE INTERESES"]):
             dentro_de_tabla = False
             break
 
         if dentro_de_tabla:
-            # Excluir abonos, totales y pagos recibidos
             if any(ignore in l_lower for ignore in [
                 "total de cargos", 
                 "total de abonos", 
@@ -152,17 +149,15 @@ def procesar_pdf_nu(file_stream, file_name=""):
             ]):
                 continue
 
-            # Buscar montos de egresos (+$... )
             match_cargo = re.search(r"\+\$\s*([\d,]+\.\d{2})", l)
             if match_cargo:
                 try:
                     monto_val = float(match_cargo.group(1).replace(",", ""))
                     
-                    # Extraer fechas (Soporta fechas con o sin año en la fila)
                     match_fechas = re.search(r"(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\s+(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)", l)
                     
                     if match_fechas:
-                        fecha_cargo_raw = match_fechas.group(2).strip() # Segunda fecha: FECHA DE CARGO
+                        fecha_cargo_raw = match_fechas.group(2).strip()
                         partes_fecha = fecha_cargo_raw.split()
                         
                         dia_cargo = partes_fecha[0].zfill(2)
@@ -174,7 +169,6 @@ def procesar_pdf_nu(file_stream, file_name=""):
                     else:
                         fecha_fmt = f"{ano_corte}-01-01"
 
-                    # Limpiar la descripción
                     desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?\s+\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?", "", l)
                     desc = re.sub(r"\+\$\s*[\d,]+\.\d{2}", "", desc)
                     desc = re.sub(r"\|\s*RFC:.*", "", desc, flags=re.IGNORECASE).strip()
