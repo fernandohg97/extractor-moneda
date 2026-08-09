@@ -91,7 +91,7 @@ def categorizar_nu(descripcion):
     if "rawbt" in desc_lower:
         return "Gastos Operativos"
         
-    # 5. Por defecto
+    # 5. Por defecto para cualquier otro registro sin coincidencia
     return "No informado"
 
 def procesar_pdf_nu(file_stream, file_name=""):
@@ -109,91 +109,73 @@ def procesar_pdf_nu(file_stream, file_name=""):
         "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
     }
 
-    # Detectar año de corte (del texto o del nombre del archivo)
-    ano_corte = str(datetime.now().year)
-    match_ano = re.search(r"\b(20\d{2})\b", texto_completo)
-    if not match_ano and file_name:
-        match_ano = re.search(r"\b(20\d{2})\b", file_name)
-    if match_ano:
-        ano_corte = match_ano.group(1)
-
     registros = []
     lineas = texto_completo.split("\n")
-    dentro_de_tabla = False
+    
+    # Patrón de coincidencia para filas principales de transacciones:
+    # Captura: [Fecha Operación] + [Fecha Cargo] + [Descripción] + [Monto +$... ]
+    patron_movimiento = re.compile(
+        r"^(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\s+(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+(.*?)\s+\+\$\s*([\d,]+\.\d{2})$",
+        re.IGNORECASE
+    )
     
     for linea in lineas:
         l = linea.strip()
         if not l:
             continue
             
-        l_upper = l.upper()
         l_lower = l.lower()
         
-        # Activar lectura con palabras clave del encabezado
-        if any(h in l_upper for h in ["CARGOS, ABONOS", "COMPRAS REGULARES"]):
-            dentro_de_tabla = True
+        # OMITIR RESÚMENES Y TOTALES FINALES (Cuadro final de Totales)
+        if any(ignore in l_lower for ignore in [
+            "total de cargos", 
+            "total de abonos", 
+            "total de compras", 
+            "grácias por tu pago", 
+            "gracias por tu pago", 
+            "abono", 
+            "-$"
+        ]):
             continue
+
+        match = patron_movimiento.search(l)
+        if match:
+            fecha_op_raw = match.group(1)
+            fecha_cargo_raw = match.group(2) # FECHA DE CARGO (2DA FECHA)
+            desc_raw = match.group(3)
+            monto_str = match_cargo = match.group(4)
             
-        # Desactivar lectura si llega a secciones de meses sin intereses o resúmenes
-        if dentro_de_tabla and any(fin in l_upper for fin in ["COMPRAS A MESES", "PLAN DE PAGOS", "ACLARACIONES", "INFORMACIÓN DE INTERESES"]):
-            dentro_de_tabla = False
-            break
-
-        if dentro_de_tabla:
-            # Excluir abonos, totales y pagos recibidos
-            if any(ignore in l_lower for ignore in [
-                "total de cargos", 
-                "total de abonos", 
-                "total de compras", 
-                "grácias por tu pago", 
-                "gracias por tu pago", 
-                "abono", 
-                "-$"
-            ]):
-                continue
-
-            # Buscar montos de egresos (+$... )
-            match_cargo = re.search(r"\+\$\s*([\d,]+\.\d{2})", l)
-            if match_cargo:
-                try:
-                    monto_val = float(match_cargo.group(1).replace(",", ""))
-                    
-                    # Extraer fechas (Soporta fechas con o sin año en la fila)
-                    match_fechas = re.search(r"(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\s+(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)", l)
-                    
-                    if match_fechas:
-                        fecha_cargo_raw = match_fechas.group(2).strip() # Segunda fecha: FECHA DE CARGO
-                        partes_fecha = fecha_cargo_raw.split()
-                        
-                        dia_cargo = partes_fecha[0].zfill(2)
-                        mes_cargo_str = partes_fecha[1].lower()[:3]
-                        mes_cargo = meses_dict.get(mes_cargo_str, "01")
-                        
-                        ano_mov = partes_fecha[2] if len(partes_fecha) > 2 else ano_corte
-                        fecha_fmt = f"{ano_mov}-{mes_cargo}-{dia_cargo}"
-                    else:
-                        fecha_fmt = f"{ano_corte}-01-01"
-
-                    # Limpiar la descripción
-                    desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?\s+\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?", "", l)
-                    desc = re.sub(r"\+\$\s*[\d,]+\.\d{2}", "", desc)
-                    desc = re.sub(r"\|\s*RFC:.*", "", desc, flags=re.IGNORECASE).strip()
-                    
-                    if not desc:
-                        desc = "Gasto Nu"
-
-                    cat = categorizar_nu(desc)
-                    
-                    registros.append({
-                        "Tipo": "Gasto",
-                        "Monto": monto_val,
-                        "Categoria": cat,
-                        "Metodo_Pago": "NU (CREDITO)",
-                        "Fecha": fecha_fmt,
-                        "Descripcion": desc
-                    })
-                except ValueError:
+            try:
+                monto_val = float(monto_str.replace(",", ""))
+                if monto_val <= 0:
                     continue
+                    
+                # Parsear Fecha de Cargo (ej: "18 JUN 2026")
+                partes_fecha = fecha_cargo_raw.split()
+                dia_cargo = partes_fecha[0].zfill(2)
+                mes_cargo_str = partes_fecha[1].lower()[:3]
+                mes_cargo = meses_dict.get(mes_cargo_str, "01")
+                ano_cargo = partes_fecha[2] if len(partes_fecha) > 2 else str(datetime.now().year)
+                
+                fecha_fmt = f"{ano_cargo}-{mes_cargo}-{dia_cargo}"
+
+                # Limpieza de la descripción (remover RFC e íconos)
+                desc_clean = re.sub(r"\|\s*RFC:.*", "", desc_raw, flags=re.IGNORECASE).strip()
+                if not desc_clean:
+                    desc_clean = "Gasto Nu"
+
+                cat = categorizar_nu(desc_clean)
+                
+                registros.append({
+                    "Tipo": "Gasto",
+                    "Monto": monto_val,
+                    "Categoria": cat,
+                    "Metodo_Pago": "NU (CREDITO)",
+                    "Fecha": fecha_fmt,
+                    "Descripcion": desc_clean
+                })
+            except ValueError:
+                continue
 
     df_res = pd.DataFrame(registros)
     if not df_res.empty:
