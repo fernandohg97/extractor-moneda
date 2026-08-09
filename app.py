@@ -68,12 +68,31 @@ df_base = cargar_datos()
 
 def categorizar_nu(descripcion):
     desc_lower = str(descripcion).lower()
-    keywords_dayana = ["mayorista", "teip", "guga", "envases", "ley"]
     
+    # 1. Regla para Produccion Dayana
+    keywords_dayana = ["mayorista", "teip", "guga", "envases", "ley", "abts"]
     for kw in keywords_dayana:
         if kw in desc_lower:
             return "Produccion Dayana"
-    return "Varios"
+            
+    # 2. Regla para Gasolina
+    keywords_gasolina = ["serv", "chapluk", "est lopez", "estacion reforma", "chevron"]
+    for kw in keywords_gasolina:
+        if kw in desc_lower:
+            return "Gasolina"
+            
+    # 3. Regla para Café
+    keywords_cafe = ["cafe", "caffe"]
+    for kw in keywords_cafe:
+        if kw in desc_lower:
+            return "Café"
+            
+    # 4. Regla para Gastos operativos
+    if "rawbt" in desc_lower:
+        return "Gastos operativos"
+        
+    # 5. Por defecto para cualquier otro registro sin coincidencia
+    return "No informado"
 
 def procesar_pdf_nu(file_stream, file_name=""):
     reader = PdfReader(file_stream)
