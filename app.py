@@ -22,22 +22,32 @@ LISTA_CATEGORIAS = [
     "Pago de Tarjeta",
     "Carro/Transporte",
     "Restaurantes y Comida",
-    "Casa",
-    "Supermercado",
-    "Café",
+    "Casa y Despensa",
+    "Cafe",
+    "Ocio",
+    "Nomina",
+    "Inversiones",
+    "Ahorro",
+    "Prestamo/Financiamiento",
+    "Gastos Operativos",
     "Gasolina",
     "Papeleria",
     "Inversion Dayana",
     "Detalles/Regalos",
-    "Varios",
+    "Uso Personal",
     "Ventas",
     "No informado"
 ]
 
 LISTA_METODOS_PAGO = [
     "NU (CREDITO)",
-    "Nu (Transferencia)",
-    "Efectivo"
+    "NU (Transferencia)",
+    "Efectivo",
+    "No informado",
+    "Banamex Priority",
+    "TDC Oro Banamex",
+    "TDC Mercado Pago",
+    "Medio Electronico",
 ]
 
 def cargar_datos():
@@ -58,7 +68,6 @@ df_base = cargar_datos()
 
 def categorizar_nu(descripcion):
     desc_lower = str(descripcion).lower()
-    # Regla por palabras clave: Mayorista, Teip, Guga, Envases, Ley
     keywords_dayana = ["mayorista", "teip", "guga", "envases", "ley"]
     
     for kw in keywords_dayana:
@@ -76,8 +85,17 @@ def procesar_pdf_nu(file_stream, file_name=""):
             
     meses_dict = {
         "ene": "01", "feb": "02", "mar": "03", "abr": "04", "may": "05", "jun": "06",
-        "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12"
+        "jul": "07", "ago": "08", "sep": "09", "oct": "10", "nov": "11", "dic": "12",
+        "enero": "01", "febrero": "02", "marzo": "03", "abril": "04", "mayo": "05", "junio": "06",
+        "julio": "07", "agosto": "08", "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
     }
+
+    ano_corte = str(datetime.now().year)
+    match_ano = re.search(r"\b(20\d{2})\b", texto_completo)
+    if not match_ano and file_name:
+        match_ano = re.search(r"\b(20\d{2})\b", file_name)
+    if match_ano:
+        ano_corte = match_ano.group(1)
 
     registros = []
     lineas = texto_completo.split("\n")
@@ -90,21 +108,26 @@ def procesar_pdf_nu(file_stream, file_name=""):
             continue
             
         l_upper = l.upper()
+        l_lower = l.lower()
         
-        # Activar lectura al encontrar el encabezado de la tabla
-        if "CARGOS, ABONOS Y COMPRAS REGULARES" in l_upper:
+        if any(h in l_upper for h in ["CARGOS, ABONOS", "COMPRAS REGULARES", "FECHA DE LA OPERACIÓN", "DESCRIPCIÓN DEL MOVIMIENTO"]):
             dentro_de_tabla = True
             continue
             
-        # Desactivar si llega a otra sección
         if dentro_de_tabla and any(fin in l_upper for fin in ["COMPRAS A MESES", "PLAN DE PAGOS", "ACLARACIONES", "INFORMACIÓN DE INTERESES"]):
             dentro_de_tabla = False
             break
 
         if dentro_de_tabla:
-            # FILTRO EXCLUSIVO DE EGRESOS: Buscar montos positivos +$...
-            # Descartar abonos con -$ o frases de pago
-            if "-$" in l or "grácias por tu pago" in l.lower() or "abono" in l.lower() or "total" in l.lower():
+            if any(ignore in l_lower for ignore in [
+                "total de cargos", 
+                "total de abonos", 
+                "total de compras", 
+                "grácias por tu pago", 
+                "gracias por tu pago", 
+                "abono", 
+                "-$"
+            ]):
                 continue
 
             match_cargo = re.search(r"\+\$\s*([\d,]+\.\d{2})", l)
@@ -112,26 +135,22 @@ def procesar_pdf_nu(file_stream, file_name=""):
                 try:
                     monto_val = float(match_cargo.group(1).replace(",", ""))
                     
-                    # PATRÓN DE FECHAS: Capturar (Fecha Operación) y (Fecha Cargo)
-                    # Ejemplo: "22 MAY 2026 23 MAY 2026 Serv Chapluk | RFC: S.I."
-                    match_fechas = re.search(r"(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})\s+(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})", l)
+                    match_fechas = re.search(r"(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)\s+(\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?)", l)
                     
                     if match_fechas:
-                        fecha_cargo_raw = match_fechas.group(2) # Tomar exactamente FECHA DE CARGO (la 2da fecha)
+                        fecha_cargo_raw = match_fechas.group(2).strip()
                         partes_fecha = fecha_cargo_raw.split()
                         
                         dia_cargo = partes_fecha[0].zfill(2)
                         mes_cargo_str = partes_fecha[1].lower()[:3]
-                        ano_cargo = partes_fecha[2]
-                        
                         mes_cargo = meses_dict.get(mes_cargo_str, "01")
-                        fecha_fmt = f"{ano_cargo}-{mes_cargo}-{dia_cargo}"
+                        
+                        ano_mov = partes_fecha[2] if len(partes_fecha) > 2 else ano_corte
+                        fecha_fmt = f"{ano_mov}-{mes_cargo}-{dia_cargo}"
                     else:
-                        # Fallback si solo trae día y mes
-                        fecha_fmt = datetime.now().strftime("%Y-%m-%d")
+                        fecha_fmt = f"{ano_corte}-01-01"
 
-                    # Extraer Descripción limpiando fechas, RFC y montos
-                    desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4}", "", l)
+                    desc = re.sub(r"^\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?\s+\d{1,2}\s+[A-Za-z]{3}(?:\s+\d{4})?", "", l)
                     desc = re.sub(r"\+\$\s*[\d,]+\.\d{2}", "", desc)
                     desc = re.sub(r"\|\s*RFC:.*", "", desc, flags=re.IGNORECASE).strip()
                     
@@ -145,8 +164,8 @@ def procesar_pdf_nu(file_stream, file_name=""):
                         "Monto": monto_val,
                         "Categoria": cat,
                         "Metodo_Pago": "NU (CREDITO)",
-                        "Fecha": fecha_fmt, # Fecha de Cargo
-                        "Descripcion": desc # Descripción limpia
+                        "Fecha": fecha_fmt,
+                        "Descripcion": desc
                     })
                 except ValueError:
                     continue
@@ -310,9 +329,11 @@ if pagina == "📊 Dashboard Financiero":
         if filtro_cat != "TODAS":
             df_filtrado = df_filtrado[df_filtrado['Categoria'] == filtro_cat]
 
+    # CÁLCULO DE INDICADORES Y PORCENTAJE
     ingresos = df_filtrado[df_filtrado['Tipo'] == 'Ingreso']['Monto'].sum() if not df_filtrado.empty else 0.0
     egresos = df_filtrado[df_filtrado['Tipo'] == 'Gasto']['Monto'].sum() if not df_filtrado.empty else 0.0
     balance = ingresos - egresos
+    porcentaje_balance = (balance / ingresos * 100) if ingresos > 0 else 0.0
 
     col_exp1, col_exp2 = st.columns(2)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -323,15 +344,22 @@ if pagina == "📊 Dashboard Financiero":
 
     with col_exp2:
         if not df_filtrado.empty:
-            pdf_bytes = generar_pdf_reporte(df_filtrado, f_inicio, f_final, ingresos, egresos, balance)
+            pdf_bytes = generar_pdf_reporte(df_filtrado, f_inicio, f_final, ingresos, egresos, balance, porcentaje_balance)
             st.download_button("📄 Exportar PDF", data=pdf_bytes, file_name=f"reporte_{f_inicio}_a_{f_final}_{timestamp}.pdf", mime="application/pdf", use_container_width=True)
 
     st.markdown("---")
 
+    # SCORECARDS CON EL NUEVO PORCENTAJE DISCRETO
     c_ing, c_egr, c_bal = st.columns(3)
     c_ing.metric("TOTAL DE INGRESOS", f"${ingresos:,.2f}")
     c_egr.metric("TOTAL DE EGRESOS", f"-${egresos:,.2f}")
-    c_bal.metric("BALANCE DEL PERÍODO", f"${balance:,.2f}")
+    
+    with c_bal:
+        st.metric("BALANCE DEL PERÍODO", f"${balance:,.2f}")
+        if ingresos > 0:
+            st.caption(f"_{porcentaje_balance:.2f}% de los ingresos_")
+        else:
+            st.caption("_0.00% de los ingresos_")
 
     st.markdown(f"### Lista de Transacciones ({len(df_filtrado)} registros)")
     st.dataframe(df_filtrado, use_container_width=True)
@@ -366,9 +394,8 @@ else:
                 if not df_extracted.empty:
                     primer_reg = df_extracted['Fecha'].iloc[0]
                     ultimo_reg = df_extracted['Fecha'].iloc[-1]
-                    st.success(f"✅ Se extrajeron **{len(df_extracted)} egresos del mes**. Período detectado: del **{primer_reg}** al **{ultimo_reg}**.")
+                    st.success(f"✅ Se extrajeron **{len(df_extracted)} registros**. Período detectado: del **{primer_reg}** al **{ultimo_reg}**.")
                     
-                    # TABLA CON DESPLEGABLES PREDEFINIDOS
                     df_edited = st.data_editor(
                         df_extracted, 
                         num_rows="dynamic", 
@@ -422,10 +449,8 @@ else:
                     primer_reg = df_extracted_nu['Fecha'].iloc[0]
                     ultimo_reg = df_extracted_nu['Fecha'].iloc[-1]
                     
-                    # ALERTA INFORMATIVA CON FECHAS Y REGISTROS
-                    st.success(f"✅ Se extrajeron **{len(df_extracted_nu)} egresos del mes**. Primer registro: **{primer_reg}** | Último registro: **{ultimo_reg}**.")
+                    st.success(f"✅ Se extrajeron **{len(df_extracted_nu)} egresos**. Primer registro: **{primer_reg}** | Último registro: **{ultimo_reg}**.")
                     
-                    # TABLA INTERACTIVA EDITABLE CON MENÚS DESPLEGABLES PREDEFINIDOS
                     df_edited_nu = st.data_editor(
                         df_extracted_nu, 
                         num_rows="dynamic", 
@@ -447,7 +472,7 @@ else:
                         st.success("¡Egresos guardados con éxito en Google Sheets!")
                         st.rerun()
                 else:
-                    st.error("No se detectaron transacciones de egreso para el mes de corte de este PDF.")
+                    st.error("No se detectaron transacciones de egreso en el PDF subido.")
             except Exception as e:
                 st.error(f"Error procesando el PDF local: {e}")
 
