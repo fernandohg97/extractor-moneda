@@ -4,7 +4,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-def generar_pdf_reporte(df_filtrado, fecha_inicio, fecha_fin, total_ingresos, total_egresos, balance):
+def generar_pdf_reporte(df_filtrado, fecha_inicio, fecha_fin, total_ingresos, total_egresos, balance, porcentaje_balance=0.0):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
