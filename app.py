@@ -130,7 +130,7 @@ def procesar_pdf_nu(file_stream, file_name=""):
         l_lower = l.lower()
         
         # Activar lectura con palabras clave del encabezado
-        if any(h in l_upper for h in ["CARGOS, ABONOS", "COMPRAS REGULARES", "FECHA DE CARGO", "FECHA DE LA OPERACIÓN", "DESCRIPCIÓN DEL MOVIMIENTO"]):
+        if any(h in l_upper for h in ["CARGOS, ABONOS", "COMPRAS REGULARES"]):
             dentro_de_tabla = True
             continue
             
