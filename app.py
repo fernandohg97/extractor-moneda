@@ -344,7 +344,7 @@ if pagina == "📊 Dashboard Financiero":
 
     with col_exp2:
         if not df_filtrado.empty:
-            pdf_bytes = generar_pdf_reporte(df_filtrado, f_inicio, f_final, ingresos, egresos, balance, porcentaje_balance)
+            pdf_bytes = generar_pdf_reporte(df_filtrado, f_inicio, f_final, ingresos, egresos, balance, porcentaje_balance=0.0)
             st.download_button("📄 Exportar PDF", data=pdf_bytes, file_name=f"reporte_{f_inicio}_a_{f_final}_{timestamp}.pdf", mime="application/pdf", use_container_width=True)
 
     st.markdown("---")
